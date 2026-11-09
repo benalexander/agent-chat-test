@@ -1,0 +1,36 @@
+# Simulator smoke test: proactive message reaches Coach via the poll, and the
+# background-sync code path posts a local notification.
+# Needs `npm run worker:dev` (LLM_MODE=mock) and the dev build running against Metro.
+#   maestro test app/.maestro/smoke.yaml
+# Tabs are tapped by position: text "Debug"/"Coach" also matches the hidden
+# screen titles.
+appId: com.homemadedigital.agentchattest
+---
+- tapOn:
+    point: "75%,93%"          # Debug tab
+- scrollUntilVisible:
+    element: "Force proactive"
+    direction: UP
+- tapOn: "Force proactive"
+- waitForAnimationToEnd
+- tapOn:
+    point: "25%,93%"          # Coach tab
+- extendedWaitUntil:
+    visible: "PROACTIVE.*"
+    timeout: 15000
+- takeScreenshot: coach-proactive
+- tapOn:
+    point: "75%,93%"
+- scrollUntilVisible:
+    element: "Force proactive"
+    direction: UP
+- tapOn: "Force proactive"
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element: "Run background sync now"
+    direction: DOWN
+- tapOn: "Run background sync now"
+- extendedWaitUntil:
+    visible: ".*notified 1.*"
+    timeout: 10000
+- takeScreenshot: debug-bg-sync

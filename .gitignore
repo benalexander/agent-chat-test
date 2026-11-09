@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+dist/
+ios/
+android/
+.wrangler/
+.dev.vars
+*.log
+.DS_Store
+.env*.local

@@ -1,0 +1,26 @@
+{
+  "name": "agent-chat-test",
+  "private": true,
+  "workspaces": [
+    "app",
+    "worker",
+    "shared"
+  ],
+  "scripts": {
+    "app": "npm run start -w app",
+    "ios": "npm run ios -w app",
+    "worker:dev": "npm run dev -w worker",
+    "worker:deploy": "npm run deploy -w worker",
+    "test": "npm test -w worker && npm test -w app",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "esbuild@0.28.2": true,
+    "workerd@1.20260815.1": true,
+    "workerd@1.20261109.1": true
+  },
+  "overrides": {
+    "@babel/core": "^7.29.0"
+  }
+}

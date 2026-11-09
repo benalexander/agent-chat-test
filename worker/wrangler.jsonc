@@ -1,0 +1,25 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "agent-chat-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [{ "name": "CoachAgent", "class_name": "CoachAgent" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CoachAgent"] }],
+  "vars": {
+    // Anthropic model id. e.g. "claude-haiku-5-5" for cheaper runs.
+    "MODEL": "claude-sonnet-5-5",
+    // "true" compresses proactive intervals to minutes (see src/config.ts).
+    "DEV_MODE": "false",
+    // "anthropic" | "mock" (mock = canned AI SDK mock model, no API key needed).
+    "LLM_MODE": "anthropic",
+    // Cloudflare AI Gateway. Leave empty to call Anthropic directly.
+    "AI_GATEWAY_ACCOUNT_ID": "",
+    "AI_GATEWAY_ID": ""
+  }
+  // Secrets (wrangler secret put / .dev.vars):
+  //   ANTHROPIC_API_KEY, APP_SHARED_SECRET, CF_AIG_TOKEN (optional)
+}
