@@ -7,3 +7,5 @@ ANTHROPIC_API_KEY=
 CF_AIG_TOKEN=
 # Compress proactive intervals (check-in every 3 min, inactivity after 2 min, cooldown 30 s).
 DEV_MODE=true
+# Bearer token for the admin panel (/admin) and /admin/api/*. Distinct from APP_SHARED_SECRET.
+ADMIN_SECRET=dev-admin

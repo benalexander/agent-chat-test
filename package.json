@@ -4,13 +4,16 @@
   "workspaces": [
     "app",
     "worker",
-    "shared"
+    "shared",
+    "admin"
   ],
   "scripts": {
     "app": "npm run start -w app",
     "ios": "npm run ios -w app",
     "worker:dev": "npm run dev -w worker",
-    "worker:deploy": "npm run deploy -w worker",
+    "admin:dev": "npm run dev -w admin",
+    "admin:build": "npm run build -w admin",
+    "worker:deploy": "npm run build -w admin && npm run deploy -w worker",
     "test": "npm test -w worker && npm test -w app",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },

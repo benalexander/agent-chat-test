@@ -17,6 +17,7 @@ Out of scope: auth, multi-campaign, Android, production hardening, cost modellin
 
 `agent-chat-test/`, git repo, npm workspaces (no Turborepo):
 
+- `admin/` — admin panel (Vite + React), served by the worker at `/admin`. See "Admin panel".
 - `app/` — Expo app. Same stack as `../companion-app`: Expo SDK 58, RN 0.88, expo-router, Unistyles 3. Ridgeway theme tokens copied in.
 - `worker/` — Cloudflare Worker + agent.
 - `shared/` — TypeScript protocol types, imported by both.
@@ -75,7 +76,7 @@ Out of scope: auth, multi-campaign, Android, production hardening, cost modellin
 
 - Simulator ↔ `wrangler dev` (localhost) for chat iteration.
 - Physical iPhone dev build ↔ deployed `*.workers.dev` for background testing.
-- Secrets via `wrangler secret` (`ANTHROPIC_API_KEY`, `APP_SHARED_SECRET`, optional `CF_AIG_TOKEN`). wrangler is a devDependency of `worker/`.
+- Secrets via `wrangler secret` (`ANTHROPIC_API_KEY`, `APP_SHARED_SECRET`, `ADMIN_SECRET`, optional `CF_AIG_TOKEN`). wrangler is a devDependency of `worker/`.
 
 ## Tests
 
@@ -85,6 +86,38 @@ Out of scope: auth, multi-campaign, Android, production hardening, cost modellin
 ## Deliverables
 
 `README.md` (run/deploy instructions) and `FINDINGS.md` template with a section per success question, to be filled in after a multi-day device trial.
+
+## Admin panel
+
+Added after the first build (grilling session, 2026-11-10). A browser panel on the worker for looking at conversations, injecting data and triggering proactive messages.
+
+- **Hosting**: `admin/` workspace (Vite + React + TS, plain CSS) built to `admin/dist/admin/` and served by the same worker as static assets at `/admin` (hash routing). API at `/admin/api/*`. Dev: `npm run admin:dev` (Vite :5173, proxies `/admin/api` to `wrangler dev` :8787); `worker:deploy` builds admin first.
+- **Auth**: separate `ADMIN_SECRET` (Bearer), typed into a login box and kept in `localStorage`. The app's secret is rejected on `/admin/api`, and vice versa. Cloudflare Access is the later upgrade.
+- **Registry**: DOs can't be enumerated, so a singleton `Registry` DO stores `{userId, firstSeen, lastSeen, timezone, summary}`. App requests upsert it (throttled to once a minute per user, off the request path). Each agent pushes its summary (message count, last message time, raised/target) whenever messages or campaign change. Admin routes 404 for unregistered userIds, so a typo never creates an agent. No backfill: existing devices register on their next request.
+- **Admin requests aren't device activity**: they don't change the stored timezone, `lastSeen`, cooldown or inactivity markers. Actions use the device's stored timezone.
+- **Users list**: userId, timezone, first/last seen, message count, last message, raised vs target; sorted by last seen.
+- **User page**: full transcript (all UIMessage parts incl. tool calls, origin/trigger badges, rev, createdAt, LLM tokens/latency), with skipped/blocked/errored proactive attempts inline as greyed rows. Polls every few seconds. Times in the device timezone. Sidebar: campaign (with silent edit), actions (donation, milestone, inactivity, force proactive with trigger), reset, delete, schedules (read-only), token totals (chat vs proactive; tokens only, no $).
+- **Campaign edit** is silent: no message; `milestonesHit` recomputed to every threshold at or below the new %.
+- **Reset** keeps the user registered. **Delete** wipes the agent and unregisters it; the device should also reset its local DB.
+- Out of scope: sending messages as the coach, runtime prompt/guardrail editing, cost in dollars, WebSockets.
+- The app's Debug tab and `/api/:userId/debug/*` stay as they are.
+- Tests: admin auth (incl. app secret rejected), registry upsert/listing, unknown user 404, an admin action end to end, delete, `/admin` serves HTML. UI tested manually.
+
+### Admin HTTP contract
+
+`Authorization: Bearer <ADMIN_SECRET>`. Types in `shared/src/admin.ts`.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| GET | `/admin/api/users` | — | `AdminUsersResponse` |
+| GET | `/admin/api/users/:userId` | — | `AdminUserDetail` |
+| POST | `/admin/api/users/:userId/donation` | `InjectDonationRequest` | `DebugActionResponse` |
+| POST | `/admin/api/users/:userId/milestone` | `InjectMilestoneRequest` | `DebugActionResponse` |
+| POST | `/admin/api/users/:userId/inactivity` | — | `DebugActionResponse` |
+| POST | `/admin/api/users/:userId/proactive` | `ForceProactiveRequest` | `DebugActionResponse` |
+| POST | `/admin/api/users/:userId/reset` | — | `DebugActionResponse` |
+| PATCH | `/admin/api/users/:userId/campaign` | `UpdateCampaignRequest` | `UpdateCampaignResponse` |
+| DELETE | `/admin/api/users/:userId` | — | `DebugActionResponse` |
 
 ## HTTP contract
 

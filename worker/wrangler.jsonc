@@ -6,9 +6,24 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   "durable_objects": {
-    "bindings": [{ "name": "CoachAgent", "class_name": "CoachAgent" }]
+    "bindings": [
+      { "name": "CoachAgent", "class_name": "CoachAgent" },
+      // Singleton (idFromName("global")) listing users for the admin panel.
+      { "name": "Registry", "class_name": "Registry" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CoachAgent"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["CoachAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["Registry"] }
+  ],
+  // Admin UI (Vite build of ../admin, base "/admin/", hash routing) served at /admin/.
+  // /api/* and /admin/api/* always hit the Worker; anything else that matches no asset
+  // (e.g. "/", "/health") falls through to the Worker too.
+  "assets": {
+    "directory": "../admin/dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/admin/api/*"]
+  },
   "vars": {
     // Anthropic model id. e.g. "claude-haiku-5-5" for cheaper runs.
     "MODEL": "claude-sonnet-5-5",
@@ -21,5 +36,5 @@
     "AI_GATEWAY_ID": ""
   }
   // Secrets (wrangler secret put / .dev.vars):
-  //   ANTHROPIC_API_KEY, APP_SHARED_SECRET, CF_AIG_TOKEN (optional)
+  //   ANTHROPIC_API_KEY, APP_SHARED_SECRET, ADMIN_SECRET, CF_AIG_TOKEN (optional)
 }

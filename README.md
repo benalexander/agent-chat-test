@@ -8,6 +8,7 @@ A fundraising-coach chat for the companion app: Expo iOS app ↔ Cloudflare Work
 - HTTP contract types: [`shared/src/protocol.ts`](shared/src/protocol.ts)
 
 ```
+admin/    Admin panel (Vite + React), served by the worker at /admin
 app/      Expo SDK 58 app (expo-router, Unistyles 3, expo-sqlite, expo-background-task)
 worker/   Cloudflare Worker + CoachAgent (Agents SDK / @cloudflare/ai-chat, AI SDK + Anthropic)
 shared/   protocol types imported by both
@@ -33,6 +34,18 @@ Things to try:
 - **Debug → Run background sync now**: exercises the background-task code path in the foreground (posts a notification on the simulator).
 
 Proactive messages obey quiet hours (21:00–08:00 in the device timezone), 2/day, and a cooldown after your last message (30 s in `DEV_MODE`). "Force proactive" bypasses them.
+
+## Admin panel
+
+Browser panel for looking at conversations, injecting donations/milestones/inactivity, forcing proactive messages, editing the campaign, and resetting or deleting a user. Design in `PLAN.md` → "Admin panel"; details in [`admin/README.md`](admin/README.md).
+
+```sh
+npm run admin:build    # wrangler needs admin/dist to exist (worker tests also write a placeholder)
+npm run worker:dev     # then open http://localhost:8787/admin, secret: ADMIN_SECRET (dev-admin)
+npm run admin:dev      # optional: Vite with hot reload on http://localhost:5173/admin/, proxies the API to :8787
+```
+
+Users appear once their device makes a request (there's no backfill). Admin actions don't count as device activity. `worker:deploy` builds the admin panel first; set `ADMIN_SECRET` with `wrangler secret put ADMIN_SECRET`.
 
 ## Device trial (background notifications)
 

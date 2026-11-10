@@ -13,6 +13,8 @@ import {
 } from 'ai';
 import { z } from 'zod';
 import type {
+  AdminMessage,
+  AdminUserDetail,
   CampaignState,
   ChatRequest,
   DebugActionResponse,
@@ -23,13 +25,26 @@ import type {
   ProactiveTrigger,
   SyncMessage,
   SyncResponse,
+  TokenTotals,
+  UpdateCampaignResponse,
+  UserSummary,
 } from '@agent-chat/shared';
 import { applyDonation, campaignSummary, recentDonations, seedCampaign } from './campaign';
-import { DEFAULT_TIMEZONE, getTimings, HISTORY_WINDOW, isDevMode } from './config';
+import { DEFAULT_TIMEZONE, getTimings, HISTORY_WINDOW, isDevMode, MILESTONES } from './config';
 import { checkGuardrails, checkinDue, countOnLocalDay, inactivityDue, isValidTimezone } from './guardrails';
 import { createModel, reportedModelName } from './llm';
-import { metadataOf, revContent, toSyncMessage, withDefaultMetadata } from './messages';
+import { messageText, metadataOf, revContent, toSyncMessage, withDefaultMetadata } from './messages';
 import { proactiveInstruction, systemPrompt, type ProactiveContext } from './prompts';
+import { registryStub } from './registry';
+import {
+  DonationSchema,
+  ForceSchema,
+  MilestoneSchema,
+  readJson,
+  type CampaignPatch,
+  type DonationInput,
+  type MilestonePercent,
+} from './schemas';
 import { CoachStore } from './store';
 
 type Outcome = ProactiveLogEntry['outcome'];
@@ -46,15 +61,6 @@ const ChatRequestSchema = z.object({
   clientMessageId: z.string().min(1).max(200),
   text: z.string().trim().min(1).max(8000),
 });
-const DonationSchema = z.object({
-  amount: z.number().positive().max(1_000_000),
-  donorName: z.string().max(100).optional(),
-  message: z.string().max(1000).optional(),
-});
-const MilestoneSchema = z.object({ percent: z.union([z.literal(25), z.literal(50), z.literal(75), z.literal(100)]) });
-const ForceSchema = z.object({
-  trigger: z.enum(['donation', 'milestone', 'inactivity', 'checkin', 'manual']).optional(),
-});
 const DonationDecisionSchema = z.object({
   send: z.boolean().describe('Whether to message the fundraiser about this donation now'),
   message: z.string().describe('The message to send (empty if send is false)'),
@@ -65,16 +71,6 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
   });
-}
-
-async function readJson(request: Request): Promise<unknown> {
-  const text = await request.text();
-  if (!text) return {};
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
 }
 
 interface Deferred<T> {
@@ -99,6 +95,11 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
   #httpSinks = new Map<string, Deferred<ReadableStream<Uint8Array>>>();
   /** User message ids whose reply turn is queued or running. */
   #answering = new Set<string>();
+  /** In-flight registry summary push (see queueSummaryPush). */
+  #summaryPush: Promise<void> | null = null;
+  #summaryDirty = false;
+  /** Set by adminDestroy: no more registry pushes from this instance. */
+  #destroying = false;
 
   private get store(): CoachStore {
     return (this.#store ??= new CoachStore(this.ctx.storage.sql));
@@ -113,8 +114,8 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
 
   private seed(): void {
     const now = Date.now();
-    this.store.set(KV.campaign, seedCampaign(now));
     this.store.set(KV.lastCheckinAt, now);
+    this.setCampaign(seedCampaign(now));
   }
 
   /**
@@ -141,6 +142,12 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
       c = this.store.get<CampaignState>(KV.campaign)!;
     }
     return c;
+  }
+
+  /** Every campaign write goes through here so the registry summary stays current. */
+  private setCampaign(c: CampaignState): void {
+    this.store.set(KV.campaign, c);
+    this.queueSummaryPush();
   }
 
   private storedTimezone(): string | null {
@@ -173,6 +180,56 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     const stamped = messages.map((m) => withDefaultMetadata(m, now));
     await super.persistMessages(stamped, excludeBroadcastIds, options);
     for (const m of this.messages) this.store.touch(m.id, revContent(m));
+    this.queueSummaryPush();
+  }
+
+  // ---- registry summary ------------------------------------------------------------
+
+  private summary(): UserSummary {
+    const c = this.store.get<CampaignState>(KV.campaign);
+    let lastMessageAt: number | null = null;
+    for (const m of this.messages) {
+      const at = metadataOf(m).createdAt;
+      if (typeof at === 'number' && (lastMessageAt === null || at > lastMessageAt)) lastMessageAt = at;
+    }
+    return {
+      messageCount: this.messages.length,
+      lastMessageAt,
+      raised: c?.raised ?? 0,
+      target: c?.target ?? 0,
+      currency: 'AUD',
+      updatedAt: Date.now(),
+    };
+  }
+
+  /**
+   * Push our UserSummary to the Registry, coalesced: at most one RPC in flight; changes
+   * made meanwhile trigger exactly one more push (with the summary as of that moment).
+   * Failures are logged, never thrown; the next change catches up.
+   */
+  private queueSummaryPush(): void {
+    if (this.#destroying) return;
+    this.#summaryDirty = true;
+    if (this.#summaryPush) return;
+    const run = async () => {
+      while (this.#summaryDirty && !this.#destroying) {
+        this.#summaryDirty = false;
+        try {
+          await registryStub(this.env).pushSummary(this.name, this.summary());
+        } catch (e) {
+          console.warn('[CoachAgent] registry summary push failed', this.name, e);
+        }
+      }
+    };
+    this.#summaryPush = run().finally(() => {
+      this.#summaryPush = null;
+    });
+    this.ctx.waitUntil(this.#summaryPush);
+  }
+
+  /** Wait for any pending summary push (so admin reads right after an action are consistent). */
+  private async flushSummary(): Promise<void> {
+    while (this.#summaryPush) await this.#summaryPush;
   }
 
   // ---- chat ---------------------------------------------------------------------
@@ -316,7 +373,7 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     };
     this.store.set(KV.lastUserMessageAt, now);
     const c = this.campaign();
-    this.store.set(KV.campaign, { ...c, lastActivityAt: Math.max(c.lastActivityAt, now) });
+    this.setCampaign({ ...c, lastActivityAt: Math.max(c.lastActivityAt, now) });
 
     const sink = deferred<ReadableStream<Uint8Array>>();
     this.#httpSinks.set(id, sink);
@@ -506,9 +563,14 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     }
   }
 
-  // ---- debug ---------------------------------------------------------------------------
+  // ---- debug / admin actions ---------------------------------------------------------
+  //
+  // Shared by the app's /api/:userId/debug/* routes (onRequest) and the admin API
+  // (called as DO RPC methods from the Worker, so they never pass through onRequest's
+  // timezone handling). None of these count as device activity beyond what the action
+  // itself does (e.g. a donation updates campaign.lastActivityAt).
 
-  private async debugState(): Promise<DebugState> {
+  async getDebugState(): Promise<DebugState> {
     const now = Date.now();
     const tz = this.timezone();
     return {
@@ -530,20 +592,45 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     };
   }
 
-  private async debugDonation(input: z.infer<typeof DonationSchema>): Promise<DebugActionResponse> {
+  async injectDonation(input: DonationInput): Promise<DebugActionResponse> {
     const now = Date.now();
     const { campaign, donation, crossed } = applyDonation(this.campaign(), input, now, `don_${crypto.randomUUID()}`);
-    this.store.set(KV.campaign, campaign);
-    if (crossed.length > 0) {
-      // A milestone message covers the donation too; announce the highest crossed.
-      const r = await this.runProactive({ trigger: 'milestone', milestone: crossed[crossed.length - 1], donation });
-      return { ok: true, ...r };
-    }
-    const r = await this.runProactive({ trigger: 'donation', donation });
+    this.setCampaign(campaign);
+    // A milestone message covers the donation too; announce the highest crossed.
+    const r =
+      crossed.length > 0
+        ? await this.runProactive({ trigger: 'milestone', milestone: crossed[crossed.length - 1], donation })
+        : await this.runProactive({ trigger: 'donation', donation });
+    await this.flushSummary();
     return { ok: true, ...r };
   }
 
-  private async debugReset(): Promise<DebugActionResponse> {
+  async injectMilestone(percent: MilestonePercent): Promise<DebugActionResponse> {
+    const c = this.campaign();
+    if (!c.milestonesHit.includes(percent)) {
+      this.setCampaign({ ...c, milestonesHit: [...c.milestonesHit, percent].sort((a, b) => a - b) });
+    }
+    const r = await this.runProactive({ trigger: 'milestone', milestone: percent });
+    await this.flushSummary();
+    return { ok: true, ...r };
+  }
+
+  async injectInactivity(): Promise<DebugActionResponse> {
+    this.store.set(KV.lastInactivityAt, Date.now());
+    const r = await this.runProactive({ trigger: 'inactivity' });
+    await this.flushSummary();
+    return { ok: true, ...r };
+  }
+
+  /** Bypasses guardrails. */
+  async forceProactive(trigger: ProactiveTrigger = 'manual'): Promise<DebugActionResponse> {
+    const r = await this.runProactive({ trigger }, { force: true });
+    await this.flushSummary();
+    return { ok: true, ...r };
+  }
+
+  /** Wipe messages, logs and state (keeps the device timezone and rev counter); reseed. */
+  async resetAgent(): Promise<DebugActionResponse> {
     this.resetTurnState();
     for (const s of this.#httpSinks.values()) s.resolve(new ReadableStream({ start: (c) => c.close() }));
     this.#httpSinks.clear();
@@ -555,12 +642,71 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     const tz = this.storedTimezone();
     this.store.clearKv();
     if (tz) this.store.set(KV.timezone, tz);
-    this.seed();
+    this.seed(); // pushes the (now empty) summary
     for (const s of this.getSchedules()) {
       if (s.callback === 'proactiveTick') await this.cancelSchedule(s.id);
     }
     await this.ensureSchedules();
+    await this.flushSummary();
     return { ok: true, message: `reset; ${this.messages.length} messages remain` };
+  }
+
+  // ---- admin-only (RPC from the Worker's /admin/api/*) -----------------------------------
+
+  /** Everything in AdminUserDetail except `user`, which the Worker adds from the Registry. */
+  async adminDetail(): Promise<Omit<AdminUserDetail, 'user'>> {
+    const state = await this.getDebugState();
+    const messages: AdminMessage[] = this.messages.map((m) => ({
+      id: m.id,
+      rev: this.store.revOf(m.id) ?? 0,
+      role: m.role,
+      text: messageText(m),
+      parts: m.parts as unknown as AdminMessage['parts'],
+      metadata: (m.metadata as AdminMessage['metadata'] | undefined) ?? null,
+    }));
+    const zero = (): TokenTotals => ({ calls: 0, inputTokens: 0, outputTokens: 0 });
+    const tokenTotals = { chat: zero(), proactive: zero() };
+    for (const e of state.llmLog) {
+      const t = tokenTotals[e.kind];
+      t.calls += 1;
+      t.inputTokens += e.inputTokens;
+      t.outputTokens += e.outputTokens;
+    }
+    return { state, messages, tokenTotals };
+  }
+
+  /**
+   * Silent campaign edit (no proactive). milestonesHit becomes every threshold at or
+   * below the new percentage, so passed thresholds never fire later.
+   */
+  async adminUpdateCampaign(patch: CampaignPatch): Promise<UpdateCampaignResponse> {
+    const next: CampaignState = { ...this.campaign() };
+    if (patch.raised !== undefined) next.raised = patch.raised;
+    if (patch.target !== undefined) next.target = patch.target;
+    if (patch.donorCount !== undefined) next.donorCount = patch.donorCount;
+    if (patch.endsAt !== undefined) next.endsAt = patch.endsAt;
+    const pct = next.target > 0 ? (next.raised / next.target) * 100 : 0;
+    next.milestonesHit = MILESTONES.filter((m) => pct >= m);
+    this.setCampaign(next);
+    await this.flushSummary();
+    return { ok: true, campaign: next };
+  }
+
+  /**
+   * Wipe this agent completely: chat messages, our tables, rev counter, schedules and
+   * alarm (Agent.destroy() drops all storage, clears the alarm, then aborts the isolate
+   * on the next tick, so the RPC caller may see that abort as an error). No summary is
+   * pushed after this starts, and any in-flight push lands before we return, so the
+   * Worker can unregister afterwards without the entry being re-created.
+   */
+  async adminDestroy(): Promise<{ ok: true }> {
+    this.#destroying = true;
+    await this.flushSummary();
+    for (const s of this.#httpSinks.values()) s.resolve(new ReadableStream({ start: (c) => c.close() }));
+    this.#httpSinks.clear();
+    this.#answering.clear();
+    await this.destroy();
+    return { ok: true };
   }
 
   // ---- HTTP routing ----------------------------------------------------------------------
@@ -577,7 +723,7 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     try {
       if (method === 'POST' && route === 'chat') return await this.handleChat(request);
       if (method === 'GET' && route === 'messages') return this.handleMessages(url);
-      if (method === 'GET' && route === 'debug/state') return json(await this.debugState());
+      if (method === 'GET' && route === 'debug/state') return json(await this.getDebugState());
 
       if (method === 'POST' && route.startsWith('debug/')) {
         const body = await readJson(request);
@@ -586,30 +732,22 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
           case 'debug/donation': {
             const p = DonationSchema.safeParse(body);
             if (!p.success) return json({ error: 'invalid_body', details: p.error.issues }, 400);
-            return json(await this.debugDonation(p.data));
+            return json(await this.injectDonation(p.data));
           }
           case 'debug/milestone': {
             const p = MilestoneSchema.safeParse(body);
             if (!p.success) return json({ error: 'invalid_body', details: p.error.issues }, 400);
-            const c = this.campaign();
-            if (!c.milestonesHit.includes(p.data.percent)) {
-              this.store.set(KV.campaign, {
-                ...c,
-                milestonesHit: [...c.milestonesHit, p.data.percent].sort((a, b) => a - b),
-              });
-            }
-            return json({ ok: true, ...(await this.runProactive({ trigger: 'milestone', milestone: p.data.percent })) });
+            return json(await this.injectMilestone(p.data.percent));
           }
           case 'debug/inactivity':
-            this.store.set(KV.lastInactivityAt, Date.now());
-            return json({ ok: true, ...(await this.runProactive({ trigger: 'inactivity' })) });
+            return json(await this.injectInactivity());
           case 'debug/proactive': {
             const p = ForceSchema.safeParse(body);
             if (!p.success) return json({ error: 'invalid_body', details: p.error.issues }, 400);
-            return json({ ok: true, ...(await this.runProactive({ trigger: p.data.trigger ?? 'manual' }, { force: true })) });
+            return json(await this.forceProactive(p.data.trigger));
           }
           case 'debug/reset':
-            return json(await this.debugReset());
+            return json(await this.resetAgent());
         }
       }
       return json({ error: 'not_found', route }, 404);

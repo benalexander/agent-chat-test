@@ -13,6 +13,7 @@ export default defineConfig({
         // Override wrangler vars/secrets for tests: mock LLM, known secret.
         bindings: {
           APP_SHARED_SECRET: 'test-secret',
+          ADMIN_SECRET: 'test-admin',
           LLM_MODE: 'mock',
           DEV_MODE: 'true',
           ANTHROPIC_API_KEY: '',
@@ -22,5 +23,7 @@ export default defineConfig({
   ],
   test: {
     testTimeout: 20_000,
+    // Ensures ../admin/dist exists (placeholder admin/index.html if the UI isn't built).
+    globalSetup: ['./test/global-setup.ts'],
   },
 });
