@@ -71,13 +71,27 @@ Out of scope: auth, multi-campaign, Android, production hardening, cost modellin
 - On wake: `GET /messages?since=lastRev` (10 s timeout) → upsert SQLite → local notification for any **complete** assistant message with `rev > lastSeenRev` and not yet `notified`. One message → text preview; several → grouped ("Your coach sent 3 messages").
 - `lastSeenRev` = advanced while Coach tab is visible in foreground. No notification while foregrounded.
 - Each run logged to `bg_runs` (woke at, app state, fetched count, notified count, error). Each notification records delay = notified time − server `createdAt`.
-- No APNs push; documented as fallback if delays are bad.
+- ~~No APNs push; documented as fallback if delays are bad.~~ Superseded by Expo push (below): on the first device build the background task essentially never ran.
+
+## Push notifications (Expo push)
+
+Added 2026-11-11 after the device trial showed `BGProcessingTask` wakes are too rare to carry notifications.
+
+- **Main path**: whenever the agent persists a proactive message (guardrails still apply), the worker sends an Expo push (`https://exp.host/--/api/v2/push/send`): title "Your coach", body = message preview (same rules as the local notification), `data = { url: '/', kind: 'proactive', messageId, createdAt }`. Push failures are logged and never undo the message. Replies are not pushed.
+- **Token**: the app gets `getExpoPushTokenAsync({ projectId })` once permission is granted and `PUT /api/:userId/push-token` on every launch. One token per user (latest device wins), stored in the agent's KV, kept across reset.
+- **Tickets and receipts**: each send logs its ticket in `coach_push_log`; accepted tickets schedule `checkPushReceipts` 15 min later. `DeviceNotRegistered` (ticket or receipt) clears the token until the app re-registers.
+- **Auth**: if `EXPO_ACCESS_TOKEN` is set it's sent as Bearer (needed once enhanced push security is on for the Expo account).
+- **App in the foreground**: a proactive push is hidden when Coach is on screen; otherwise shown. Either way the app syncs (`reason: 'push'`).
+- **Background task**: kept as a sync-only prefetch. While a token is registered it marks due messages handled instead of posting local notifications (no duplicates); without a token it falls back to local notifications as before.
+- **Delay measurement**: delay = `notification.date` (iOS delivery time) − server `createdAt`, recorded in `notification_deliveries` (`source = 'push'`, one row per message) when the push is received in the foreground, tapped, or still in Notification Centre at the next launch. Swiped-away pushes are missed; the worker's push log covers the send side.
+- **Debug / admin**: Debug → Push shows device registration, server token, push delay stats, push log, "Register token", "Send test push". Admin sidebar → Push shows token, push log, "Send test push"; transcript shows a push badge on each proactive message.
+- **Setup**: APNs key uploaded to Expo (`eas credentials`), `enableRemoteNotifications: true` (adds `aps-environment`), new native build.
 
 ## Environments
 
 - Simulator ↔ `wrangler dev` (localhost) for chat iteration.
 - Physical iPhone dev build ↔ deployed `*.workers.dev` for background testing.
-- Secrets via `wrangler secret` (`ANTHROPIC_API_KEY`, `APP_SHARED_SECRET`, `ADMIN_SECRET`, optional `CF_AIG_TOKEN`). wrangler is a devDependency of `worker/`.
+- Secrets via `wrangler secret` (`ANTHROPIC_API_KEY`, `APP_SHARED_SECRET`, `ADMIN_SECRET`, optional `CF_AIG_TOKEN`, optional `EXPO_ACCESS_TOKEN`). wrangler is a devDependency of `worker/`.
 
 ## Tests
 
@@ -117,6 +131,7 @@ Added after the first build (grilling session, 2026-11-10). A browser panel on t
 | POST | `/admin/api/users/:userId/inactivity` | — | `DebugActionResponse` |
 | POST | `/admin/api/users/:userId/proactive` | `ForceProactiveRequest` | `DebugActionResponse` |
 | POST | `/admin/api/users/:userId/reset` | — | `DebugActionResponse` |
+| POST | `/admin/api/users/:userId/push` | — | `DebugActionResponse` (test push) |
 | PATCH | `/admin/api/users/:userId/campaign` | `UpdateCampaignRequest` | `UpdateCampaignResponse` |
 | DELETE | `/admin/api/users/:userId` | — | `DebugActionResponse` |
 
@@ -128,9 +143,11 @@ All routes: `Authorization: Bearer <APP_SHARED_SECRET>`, `X-Timezone: <IANA tz>`
 |---|---|---|---|
 | POST | `/api/:userId/chat` | `ChatRequest` | AI SDK UI message stream (SSE) |
 | GET | `/api/:userId/messages?since=<rev>` | — | `SyncResponse` |
+| PUT | `/api/:userId/push-token` | `PushTokenRequest` | `PushTokenResponse` |
 | GET | `/api/:userId/debug/state` | — | `DebugState` |
 | POST | `/api/:userId/debug/donation` | `InjectDonationRequest` | `DebugActionResponse` |
 | POST | `/api/:userId/debug/milestone` | `InjectMilestoneRequest` | `DebugActionResponse` |
 | POST | `/api/:userId/debug/inactivity` | — | `DebugActionResponse` |
 | POST | `/api/:userId/debug/proactive` | `ForceProactiveRequest` | `DebugActionResponse` |
 | POST | `/api/:userId/debug/reset` | — | `DebugActionResponse` |
+| POST | `/api/:userId/debug/push-test` | — | `DebugActionResponse` |

@@ -2,7 +2,7 @@
  * Pure sync logic: no IO, no React Native imports, so it can be unit tested in
  * plain Jest. sync.ts does the fetching and writing; this decides what to write.
  */
-import type { MessageOrigin, ProactiveTrigger, SyncMessage, SyncResponse } from '@agent-chat/shared';
+import type { MessageOrigin, ProactiveTrigger, PushData, SyncMessage, SyncResponse } from '@agent-chat/shared';
 
 export type LocalStatus = 'pending' | 'sent' | 'failed';
 
@@ -155,4 +155,30 @@ export function delayStats(delaysMs: readonly number[]): DelayStats {
   const sorted = [...delaysMs].sort((a, b) => a - b);
   const pick = (p: number) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1))];
   return { count: sorted.length, medianMs: pick(0.5), p90Ms: pick(0.9), maxMs: sorted[sorted.length - 1] };
+}
+
+// ---------- push ----------
+
+/** The `data` of an Expo push from our worker (see PushData), or null for anything else. */
+export function parsePushData(data: unknown): PushData | null {
+  if (!data || typeof data !== 'object') return null;
+  const d = data as Record<string, unknown>;
+  if (d.kind !== 'proactive' && d.kind !== 'test') return null;
+  return {
+    url: '/',
+    kind: d.kind,
+    ...(typeof d.messageId === 'string' ? { messageId: d.messageId } : {}),
+    ...(typeof d.createdAt === 'number' ? { createdAt: d.createdAt } : {}),
+  };
+}
+
+/**
+ * Whether to show a notification that arrives while the app is running. A proactive
+ * push is hidden only when the user is already looking at Coach (the message appears
+ * in the thread via the sync it triggers). Test pushes and local notifications always show.
+ */
+export function shouldPresent(data: unknown, ctx: { appActive: boolean; coachVisible: boolean }): boolean {
+  const push = parsePushData(data);
+  if (push?.kind !== 'proactive') return true;
+  return !(ctx.appActive && ctx.coachVisible);
 }

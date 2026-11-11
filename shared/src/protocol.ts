@@ -117,6 +117,55 @@ export interface DebugState {
   proactiveLog: ProactiveLogEntry[];
   /** `time` = next run, ms since epoch. */
   schedules: { id: string; callback: string; time: number; type: string }[];
+  push: PushState;
+}
+
+// ---- Push (Expo push service) ------------------------------------------------
+
+/** PUT /api/:userId/push-token. Latest device wins (one token per user). */
+export interface PushTokenRequest {
+  /** ExponentPushToken[...] from Notifications.getExpoPushTokenAsync. */
+  token: string;
+}
+
+/** Response of PUT /push-token. */
+export interface PushTokenResponse {
+  ok: boolean;
+}
+
+/**
+ * One push attempt. `ticket` is Expo's immediate answer (accepted or rejected);
+ * `receipt` is APNs' answer, checked ~15 min later.
+ */
+export interface PushLogEntry {
+  at: number;
+  kind: 'proactive' | 'test';
+  /** Message id for proactive pushes. */
+  messageId?: string;
+  /** 'no_token': nothing was sent because the device hasn't registered a token. */
+  ticket: 'ok' | 'error' | 'no_token';
+  ticketId?: string;
+  receipt?: 'ok' | 'error';
+  receiptAt?: number;
+  /** Expo/APNs error code or message (e.g. DeviceNotRegistered). */
+  error?: string;
+}
+
+export interface PushState {
+  /** Last 12 characters of the stored token, or null if none. */
+  tokenTail: string | null;
+  tokenUpdatedAt: number | null;
+  /** Newest first, capped. */
+  log: PushLogEntry[];
+}
+
+/** data payload of every push notification. */
+export interface PushData {
+  url: '/';
+  kind: PushLogEntry['kind'];
+  messageId?: string;
+  /** Server createdAt of the message (ms), for delivery-delay measurement. */
+  createdAt?: number;
 }
 
 export interface InjectDonationRequest {

@@ -45,17 +45,22 @@ Proactive messages respect quiet hours (21:00–08:00 in the `X-Timezone` you se
 | `APP_SHARED_SECRET` | secret | `Authorization: Bearer <secret>` on every request; unset → every request is 401 |
 | `ADMIN_SECRET` | secret | `Authorization: Bearer <secret>` on `/admin/api/*` only; unset (or equal to `APP_SHARED_SECRET`) → every admin request is 401. Rejected on `/api/*` |
 | `CF_AIG_TOKEN` | secret, optional | sent as `cf-aig-authorization` for an authenticated gateway |
+| `EXPO_ACCESS_TOKEN` | secret, optional | sent as Bearer to the Expo push service; required once enhanced push security is on |
 
 ## Routes
 
 | Route | Auth | Notes |
 |---|---|---|
 | `GET /`, `GET /health` | none | `{ ok: true }` |
-| `/api/:userId/*` | `APP_SHARED_SECRET` | app API (chat, messages, debug/*), CORS `*`. Each request also registers/refreshes the user in the Registry (see below) |
+| `/api/:userId/*` | `APP_SHARED_SECRET` | app API (chat, messages, push-token, debug/*), CORS `*`. Each request also registers/refreshes the user in the Registry (see below) |
 | `/admin/api/*` | `ADMIN_SECRET` | admin API, no CORS (same origin). Contract and route list: `../shared/src/admin.ts` |
 | `/admin/` | none (UI asks for the admin secret) | static admin UI from `../admin/dist` (Vite `base: '/admin/'`, hash routing); `/admin` redirects to `/admin/` |
 
 Admin routes for a userId not in the Registry return 404 `{ error: 'unknown_user' }` without touching the agent. The Worker calls agents over DO RPC for admin actions (never `onRequest`), so admin requests don't change the stored device timezone, `lastSeen`, or the agent's activity/cooldown markers. `DELETE /admin/api/users/:userId` calls the Agents SDK `destroy()` (drops all storage, alarms and schedules, then aborts the DO) and then removes the Registry entry.
+
+## Push
+
+Proactive messages are pushed via Expo (`src/push.ts`). The device registers its token with `PUT /api/:userId/push-token` (`ExponentPushToken[...]`; latest wins, kept across reset). Each send is logged (`DebugState.push.log`: ticket, then receipt ~15 min later via the `checkPushReceipts` schedule). `DeviceNotRegistered` clears the token. A failed push never fails the proactive message. Test: `POST /api/:userId/debug/push-test` or the admin "Send test push".
 
 ## Registry
 
@@ -79,6 +84,7 @@ npx wrangler secret put APP_SHARED_SECRET
 npx wrangler secret put ADMIN_SECRET
 npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler secret put CF_AIG_TOKEN          # optional
+npx wrangler secret put EXPO_ACCESS_TOKEN     # optional (needed with enhanced push security)
 # edit vars in wrangler.jsonc (AI_GATEWAY_*, DEV_MODE, MODEL) or pass --var
 (cd .. && npm run admin:build)                # admin UI → ../admin/dist (root `npm run worker:deploy` does both)
 npx wrangler deploy                           # → https://agent-chat-test.<subdomain>.workers.dev

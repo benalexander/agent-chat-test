@@ -7,5 +7,7 @@ declare namespace Cloudflare {
     ANTHROPIC_API_KEY: string;
     ADMIN_SECRET: string;
     CF_AIG_TOKEN?: string;
+    /** Expo access token; required once enhanced push security is on (optional otherwise). */
+    EXPO_ACCESS_TOKEN?: string;
   }
 }

@@ -1,5 +1,6 @@
 /** Request-body schemas shared by the app debug routes (agent.ts) and the admin API (admin.ts). */
 import { z } from 'zod';
+import { isExpoPushToken } from './push';
 
 export const DonationSchema = z.object({
   amount: z.number().positive().max(1_000_000),
@@ -27,6 +28,11 @@ export const UpdateCampaignSchema = z
   })
   .strict();
 export type CampaignPatch = z.infer<typeof UpdateCampaignSchema>;
+
+/** PushTokenRequest (shared/src/protocol.ts). */
+export const PushTokenSchema = z.object({
+  token: z.string().refine(isExpoPushToken, 'not an Expo push token'),
+});
 
 export async function readJson(request: Request): Promise<unknown> {
   const text = await request.text();

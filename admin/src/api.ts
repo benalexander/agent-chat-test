@@ -79,6 +79,7 @@ export const api = {
   forceProactive: (userId: string, body: AdminProactiveRequest) =>
     request<AdminActionResponse>('POST', `${userPath(userId)}/proactive`, body),
   reset: (userId: string) => request<AdminActionResponse>('POST', `${userPath(userId)}/reset`, {}),
+  testPush: (userId: string) => request<AdminActionResponse>('POST', `${userPath(userId)}/push`, {}),
   updateCampaign: (userId: string, body: UpdateCampaignRequest) =>
     request<UpdateCampaignResponse>('PATCH', `${userPath(userId)}/campaign`, body),
   deleteUser: (userId: string) => request<AdminActionResponse>('DELETE', userPath(userId)),

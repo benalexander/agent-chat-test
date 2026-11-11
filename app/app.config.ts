@@ -25,6 +25,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       NSAppTransportSecurity: { NSAllowsLocalNetworking: true },
     },
   },
+  extra: {
+    // Read by getExpoPushTokenAsync (src/sync/push.ts).
+    eas: { projectId: '894c5fc0-2501-489d-9e86-e229a9e33f46' },
+  },
   plugins: [
     'expo-router',
     'expo-font',
@@ -35,8 +39,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     [
       'expo-notifications',
       {
-        // Local notifications only: no APNs entitlement needed.
-        enableRemoteNotifications: false,
+        // Expo push (APNs) for proactive messages. Adds the aps-environment
+        // entitlement ('development' for local builds; Xcode's export step uses the
+        // provisioning profile's value for ad-hoc/App Store builds).
+        enableRemoteNotifications: true,
       },
     ],
     [

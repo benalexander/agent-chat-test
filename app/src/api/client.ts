@@ -11,6 +11,8 @@ import {
   type ForceProactiveRequest,
   type InjectDonationRequest,
   type InjectMilestoneRequest,
+  type PushTokenRequest,
+  type PushTokenResponse,
   type SyncResponse,
 } from '@agent-chat/shared';
 import { fetch } from 'expo/fetch';
@@ -64,7 +66,7 @@ interface RequestOpts {
   timeoutMs?: number;
 }
 
-async function requestJson<T>(method: 'GET' | 'POST', path: string, body?: unknown, opts: RequestOpts = {}) {
+async function requestJson<T>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown, opts: RequestOpts = {}) {
   const { signal, clear } = withTimeout(opts.signal, opts.timeoutMs);
   try {
     const res = await fetch(await url(path), {
@@ -109,6 +111,11 @@ export async function postChat(req: ChatRequest, signal?: AbortSignal) {
   return res.body;
 }
 
+/** PUT /push-token. Latest device wins on the server. */
+export function putPushToken(body: PushTokenRequest, opts?: RequestOpts): Promise<PushTokenResponse> {
+  return requestJson<PushTokenResponse>('PUT', '/push-token', body, opts);
+}
+
 export const debugApi = {
   state: (opts?: RequestOpts) => requestJson<DebugState>('GET', '/debug/state', undefined, opts),
   donation: (body: InjectDonationRequest) => requestJson<DebugActionResponse>('POST', '/debug/donation', body),
@@ -117,4 +124,5 @@ export const debugApi = {
   proactive: (body: ForceProactiveRequest = {}) =>
     requestJson<DebugActionResponse>('POST', '/debug/proactive', body),
   reset: () => requestJson<DebugActionResponse>('POST', '/debug/reset'),
+  pushTest: () => requestJson<DebugActionResponse>('POST', '/debug/push-test'),
 };

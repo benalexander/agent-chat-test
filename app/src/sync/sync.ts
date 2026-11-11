@@ -12,7 +12,7 @@ import { errorMessage } from '../lib/format';
 import { mergeSyncResponse } from './merge';
 import { isCoachVisible } from './presence';
 
-export type SyncReason = 'poll' | 'foreground' | 'pull' | 'chat' | 'background_task' | 'manual';
+export type SyncReason = 'poll' | 'foreground' | 'pull' | 'chat' | 'background_task' | 'manual' | 'push';
 
 export interface SyncOptions {
   reason: SyncReason;

@@ -16,6 +16,10 @@ export const KV = {
   notifPromptShown: 'notif:prompt_shown',
   /** Result of registering the background task (JSON). */
   backgroundSetup: 'bg:setup',
+  /** Result of the last push-token registration attempt (JSON PushSetup). */
+  pushSetup: 'push:setup',
+  /** Expo push token the server has acknowledged (set only after a successful PUT). */
+  pushToken: 'push:token',
 } as const;
 type KvKey = (typeof KV)[keyof typeof KV];
 
@@ -251,8 +255,11 @@ export async function listBgRuns(limit = 200): Promise<BgRun[]> {
 
 // ---------- notification_deliveries ----------
 
+export type DeliverySource = 'local' | 'push';
+
 export interface Delivery {
   id: number;
+  source: DeliverySource;
   messageId: string;
   createdAt: number;
   notifiedAt: number;
@@ -285,6 +292,24 @@ export async function recordDeliveries(
   emit('deliveries');
 }
 
+/**
+ * A push notification iOS delivered at `deliveredAt` (notification.date). Idempotent per
+ * message: the same push is seen several ways (received in foreground, tapped,
+ * still in Notification Centre), and only the first sighting is stored.
+ */
+export async function recordPushDelivery(messageId: string, createdAt: number, deliveredAt: number): Promise<boolean> {
+  const res = await getDb().runAsync(
+    `INSERT OR IGNORE INTO notification_deliveries (message_id, created_at, notified_at, delay_ms, grouped, bg_run_id, source)
+     VALUES (?, ?, ?, ?, 0, NULL, 'push')`,
+    messageId,
+    createdAt,
+    deliveredAt,
+    Math.max(0, deliveredAt - createdAt),
+  );
+  if (res.changes > 0) emit('deliveries');
+  return res.changes > 0;
+}
+
 export async function listDeliveries(limit = 500): Promise<Delivery[]> {
   const rows = await getDb().getAllAsync<{
     id: number;
@@ -294,9 +319,11 @@ export async function listDeliveries(limit = 500): Promise<Delivery[]> {
     delay_ms: number;
     grouped: number;
     bg_run_id: number | null;
+    source: string;
   }>('SELECT * FROM notification_deliveries ORDER BY id DESC LIMIT ?', limit);
   return rows.map((r) => ({
     id: r.id,
+    source: r.source as DeliverySource,
     messageId: r.message_id,
     createdAt: r.created_at,
     notifiedAt: r.notified_at,

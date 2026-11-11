@@ -75,6 +75,14 @@ const MIGRATIONS: readonly ((d: SQLite.SQLiteDatabase) => void)[] = [
       bg_run_id INTEGER
     );
   `),
+  // v2: deliveries measured from Expo push notifications. 'local' = posted by the
+  // background task; 'push' = delivered by APNs, at most one row per message.
+  (d) =>
+    d.execSync(`
+    ALTER TABLE notification_deliveries ADD COLUMN source TEXT NOT NULL DEFAULT 'local';
+    CREATE UNIQUE INDEX IF NOT EXISTS notification_deliveries_push
+      ON notification_deliveries(message_id) WHERE source = 'push';
+  `),
 ];
 
 const SCHEMA_VERSION = MIGRATIONS.length;

@@ -84,6 +84,7 @@ async function route(request: Request, env: Cloudflare.Env): Promise<Response> {
     inactivity: 'POST',
     proactive: 'POST',
     reset: 'POST',
+    push: 'POST',
     campaign: 'PATCH',
   };
   const methods = allowed[action ?? ''];
@@ -145,6 +146,10 @@ async function route(request: Request, env: Cloudflare.Env): Promise<Response> {
     case 'reset': {
       const agent = await getAgentByName(env.CoachAgent, userId);
       return json((await agent.resetAgent()) satisfies AdminActionResponse);
+    }
+    case 'push': {
+      const agent = await getAgentByName(env.CoachAgent, userId);
+      return json((await agent.sendTestPush()) satisfies AdminActionResponse);
     }
     case 'campaign': {
       const p = await parseBody(request, UpdateCampaignSchema);

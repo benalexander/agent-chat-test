@@ -5,12 +5,13 @@ import type {
   AdminUserDetail,
   LlmLogEntry,
   ProactiveLogEntry,
+  PushLogEntry,
 } from '@agent-chat/shared';
 import { fmtInt } from './format';
 import { Time } from './hooks';
 
 type Item =
-  | { kind: 'message'; at: number; message: AdminMessage; llm: LlmLogEntry | null }
+  | { kind: 'message'; at: number; message: AdminMessage; llm: LlmLogEntry | null; push: PushLogEntry | null }
   | { kind: 'system'; at: number; entry: ProactiveLogEntry };
 
 /** How far (ms) an LLM log entry may be from a message's createdAt to count as its turn. */
@@ -56,6 +57,9 @@ function matchLlm(messages: AdminMessage[], log: LlmLogEntry[]): Map<string, Llm
 
 function buildItems(detail: AdminUserDetail): Item[] {
   const llm = matchLlm(detail.messages, detail.state.llmLog);
+  const push = new Map(
+    detail.state.push.log.filter((p) => p.messageId).map((p) => [p.messageId as string, p] as const),
+  );
   const items: Item[] = [];
   // Messages without metadata (pre-stamping) inherit the previous message's time so
   // they keep their thread position.
@@ -63,7 +67,7 @@ function buildItems(detail: AdminUserDetail): Item[] {
   for (const m of detail.messages) {
     const at = m.metadata?.createdAt ?? lastAt;
     lastAt = at;
-    items.push({ kind: 'message', at, message: m, llm: llm.get(m.id) ?? null });
+    items.push({ kind: 'message', at, message: m, llm: llm.get(m.id) ?? null, push: push.get(m.id) ?? null });
   }
   for (const entry of detail.state.proactiveLog) {
     if (entry.outcome !== 'sent') items.push({ kind: 'system', at: entry.at, entry });
@@ -133,7 +137,7 @@ function SystemRow({ entry, tz }: { entry: ProactiveLogEntry; tz: string }) {
 }
 
 function MessageRow({ item, tz }: { item: Extract<Item, { kind: 'message' }>; tz: string }) {
-  const { message: m, llm } = item;
+  const { message: m, llm, push } = item;
   const meta = m.metadata;
   return (
     <div className={`msg msg-${m.role}`}>
@@ -142,6 +146,7 @@ function MessageRow({ item, tz }: { item: Extract<Item, { kind: 'message' }>; tz
         {meta && <span className={`badge badge-${meta.origin}`}>{meta.origin}</span>}
         {meta?.trigger && <span className="badge badge-trigger">{meta.trigger}</span>}
         {!meta && <span className="badge">no metadata</span>}
+        {push && <PushBadge entry={push} />}
         <span className="muted small">rev {m.rev}</span>
         <span className="spacer" />
         {llm && (
@@ -159,6 +164,27 @@ function MessageRow({ item, tz }: { item: Extract<Item, { kind: 'message' }>; tz
         ))}
       </div>
     </div>
+  );
+}
+
+/** Push outcome for a proactive message: receipt if checked, else the ticket. */
+function PushBadge({ entry: p }: { entry: PushLogEntry }) {
+  const failed = p.ticket === 'error' || p.receipt === 'error';
+  const label =
+    p.ticket === 'no_token'
+      ? 'push: no token'
+      : failed
+        ? `push failed${p.error ? `: ${p.error}` : ''}`
+        : p.receipt === 'ok'
+          ? 'push delivered to APNs'
+          : 'push sent';
+  return (
+    <span
+      className={`badge ${failed ? 'badge-push-fail' : p.ticket === 'no_token' ? '' : 'badge-push'}`}
+      title={[`ticket ${p.ticket}`, p.ticketId, p.receipt && `receipt ${p.receipt}`].filter(Boolean).join(' · ')}
+    >
+      {label}
+    </span>
   );
 }
 

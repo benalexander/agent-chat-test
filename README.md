@@ -1,6 +1,6 @@
 # Agent Chat POC
 
-A fundraising-coach chat for the companion app: Expo iOS app ↔ Cloudflare Worker hosting one `AIChatAgent` Durable Object per device, with proactive messages and background-task local notifications.
+A fundraising-coach chat for the companion app: Expo iOS app ↔ Cloudflare Worker hosting one `AIChatAgent` Durable Object per device, with proactive messages delivered as Expo push notifications (background-task local notifications as a fallback).
 
 - Design / spec: [`PLAN.md`](PLAN.md)
 - Trial results template: [`FINDINGS.md`](FINDINGS.md)
@@ -47,14 +47,16 @@ npm run admin:dev      # optional: Vite with hot reload on http://localhost:5173
 
 Users appear once their device makes a request (there's no backfill). Admin actions don't count as device activity. `worker:deploy` builds the admin panel first; set `ADMIN_SECRET` with `wrangler secret put ADMIN_SECRET`.
 
-## Device trial (background notifications)
+## Device trial (push notifications)
 
-`BGTaskScheduler` doesn't run realistically on the simulator, so:
+Push needs a physical iPhone and a paid Apple Developer account:
 
 1. Deploy the worker (see `worker/README.md` → Deploy). Set `LLM_MODE=anthropic`, `DEV_MODE` as you prefer, secrets via `wrangler secret put`.
-2. Set `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_APP_SECRET` in `app/.env.local` to the deployed values.
-3. Build a dev client onto a physical iPhone: `cd app && npx expo run:ios --device` (or `eas build --profile development`).
-4. Use the phone normally for several days. Debug tab shows background runs, notification delays (median/p90/max) and token logs; "Copy as JSON" to export.
+2. Push credentials, once: `cd app && npx eas credentials` → iOS → your bundle id → Push Notifications → create (or upload) an APNs key; Expo stores it. Optional: turn on enhanced push security in your Expo account's access-token settings, create an access token, and `wrangler secret put EXPO_ACCESS_TOKEN`.
+3. Set `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_APP_SECRET` in `app/.env.local` to the deployed values.
+4. Build onto the phone: `cd app && npx expo run:ios --device` (or `eas build --profile development`). This must be a new native build (the APNs entitlement changed). With automatic signing, Xcode adds the Push capability to the profile.
+5. Allow notifications, then check Debug → Push: "Device: registered …" and a server token. Background the app and tap "Send test push" first (or use the admin panel's button) to confirm delivery.
+6. Use the phone normally for several days. Debug shows push delays (median/p90/max), push log, background runs and token logs; "Copy as JSON" to export.
 5. Write up results in `FINDINGS.md`.
 
 ## Tests & checks

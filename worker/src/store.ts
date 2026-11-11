@@ -4,9 +4,9 @@
  *  - coach_message_rev: sync cursor. `rev` is a global monotonic counter bumped on
  *    every insert AND update of a message (the SDK's internal `seq` is private and
  *    not bumped on updates). `hash` detects whether a persisted message changed.
- *  - coach_llm_log / coach_proactive_log: debug logs, capped at LOG_CAP rows.
+ *  - coach_llm_log / coach_proactive_log / coach_push_log: debug logs, capped at LOG_CAP rows.
  */
-import type { LlmLogEntry, ProactiveLogEntry } from '@agent-chat/shared';
+import type { LlmLogEntry, ProactiveLogEntry, PushLogEntry } from '@agent-chat/shared';
 import { LOG_CAP } from './config';
 
 /** cyrb53 — fast non-crypto string hash; only used for change detection. */
@@ -34,6 +34,7 @@ export class CoachStore {
     sql.exec(`CREATE INDEX IF NOT EXISTS coach_message_rev_rev ON coach_message_rev (rev)`);
     sql.exec(`CREATE TABLE IF NOT EXISTS coach_llm_log (id INTEGER PRIMARY KEY AUTOINCREMENT, entry TEXT NOT NULL)`);
     sql.exec(`CREATE TABLE IF NOT EXISTS coach_proactive_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, outcome TEXT NOT NULL, entry TEXT NOT NULL)`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS coach_push_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ticket_id TEXT, entry TEXT NOT NULL)`);
   }
 
   // ---- kv --------------------------------------------------------------------
@@ -152,8 +153,39 @@ export class CoachStore {
       .map((r) => r.at);
   }
 
+  logPush(entry: PushLogEntry): void {
+    this.sql.exec(
+      `INSERT INTO coach_push_log (ticket_id, entry) VALUES (?, ?)`,
+      entry.ticketId ?? null,
+      JSON.stringify(entry),
+    );
+    this.sql.exec(
+      `DELETE FROM coach_push_log WHERE id NOT IN (SELECT id FROM coach_push_log ORDER BY id DESC LIMIT ?)`,
+      LOG_CAP,
+    );
+  }
+
+  /** Merge `patch` into the log entry for `ticketId` (no-op if it was pruned). */
+  updatePush(ticketId: string, patch: Partial<PushLogEntry>): void {
+    const row = this.sql
+      .exec<{ id: number; entry: string }>(`SELECT id, entry FROM coach_push_log WHERE ticket_id = ?`, ticketId)
+      .toArray()[0];
+    if (!row) return;
+    const entry = { ...(JSON.parse(row.entry) as PushLogEntry), ...patch };
+    this.sql.exec(`UPDATE coach_push_log SET entry = ? WHERE id = ?`, JSON.stringify(entry), row.id);
+  }
+
+  /** Newest first. */
+  pushLog(): PushLogEntry[] {
+    return this.sql
+      .exec<{ entry: string }>(`SELECT entry FROM coach_push_log ORDER BY id DESC`)
+      .toArray()
+      .map((r) => JSON.parse(r.entry) as PushLogEntry);
+  }
+
   clearLogs(): void {
     this.sql.exec(`DELETE FROM coach_llm_log`);
     this.sql.exec(`DELETE FROM coach_proactive_log`);
+    this.sql.exec(`DELETE FROM coach_push_log`);
   }
 }

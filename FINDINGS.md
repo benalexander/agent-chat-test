@@ -52,6 +52,13 @@ Paste the Debug → "Copy as JSON" export into `trial-data/` and summarise:
 
 **Verdict:** Is background-task polling good enough, or is APNs push required?
 
+### 4b. Expo push
+
+- Push delay (Debug → Push, delivered − created; median / p90 / max):
+- Pushes measured vs proactive messages sent (admin push log):
+- Ticket / receipt errors seen:
+- Behaviour after force-quit, Low Power Mode, Focus modes:
+
 ---
 
 ## Cost snapshot

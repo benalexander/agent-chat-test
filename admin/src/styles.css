@@ -434,6 +434,15 @@ select:focus,
   border-color: var(--accent);
   color: #000;
 }
+.badge-push {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.badge-push-fail {
+  border-color: var(--danger);
+  color: var(--danger);
+  text-transform: none;
+}
 .system-row {
   display: flex;
   flex-wrap: wrap;

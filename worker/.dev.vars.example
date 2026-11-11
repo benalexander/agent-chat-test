@@ -9,3 +9,5 @@ CF_AIG_TOKEN=
 DEV_MODE=true
 # Bearer token for the admin panel (/admin) and /admin/api/*. Distinct from APP_SHARED_SECRET.
 ADMIN_SECRET=dev-admin
+# Optional: Expo access token, required once enhanced push security is on for the Expo account.
+EXPO_ACCESS_TOKEN=

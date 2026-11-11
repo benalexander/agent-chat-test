@@ -109,6 +109,7 @@ export interface AdminUserDetail {
 //   POST   .../inactivity  {}                      → DebugActionResponse
 //   POST   .../proactive   ForceProactiveRequest   → DebugActionResponse  (bypasses guardrails)
 //   POST   .../reset       {}                      → DebugActionResponse  (user stays registered)
+//   POST   .../push        {}                      → DebugActionResponse  (test push; no message created)
 //   PATCH  .../campaign    UpdateCampaignRequest   → UpdateCampaignResponse
 //   DELETE /admin/api/users/:userId                → DebugActionResponse  (wipe agent + unregister)
 

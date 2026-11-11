@@ -6,7 +6,6 @@
  */
 import * as BackgroundTask from 'expo-background-task';
 import * as Notifications from 'expo-notifications';
-import { IosAuthorizationStatus } from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import { AppState } from 'react-native';
 
@@ -27,16 +26,23 @@ import {
   type RunSource,
 } from '../db/repo';
 import { errorMessage } from '../lib/format';
-import { buildNotificationContent, selectNotifiable } from './merge';
+import { buildNotificationContent, selectNotifiable, shouldPresent } from './merge';
+import { isCoachVisible } from './presence';
+import { canNotify, pushActive } from './push';
 import { runSync } from './sync';
 
+export { canNotify };
+
+// Notifications arriving while the app is running. A proactive push is hidden when
+// Coach is already on screen (the _layout received-listener syncs it into the thread).
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: false,
-    shouldSetBadge: false,
-  }),
+  handleNotification: async (n) => {
+    const show = shouldPresent(n.request.content.data, {
+      appActive: AppState.currentState === 'active',
+      coachVisible: isCoachVisible(),
+    });
+    return { shouldShowBanner: show, shouldShowList: show, shouldPlaySound: false, shouldSetBadge: false };
+  },
 });
 
 TaskManager.defineTask(BACKGROUND_TASK_NAME, async () => {
@@ -55,12 +61,6 @@ export interface BackgroundRunResult {
   error: string | null;
 }
 
-/** True if the app may post alerts (granted or iOS provisional). */
-export async function canNotify(): Promise<boolean> {
-  const p = await Notifications.getPermissionsAsync();
-  return p.granted || p.ios?.status === IosAuthorizationStatus.PROVISIONAL;
-}
-
 /**
  * What the background task does on each wake. Also called by Debug → "Run
  * background sync now" (source 'manual'), which posts the notification even
@@ -71,6 +71,10 @@ export async function canNotify(): Promise<boolean> {
  *    rev > lastSeenRev that haven't been handled; one → preview, several → grouped
  * 3. record deliveries (delay = now − server createdAt), mark notified
  * 4. log the run in bg_runs
+ *
+ * Once the worker has our push token (pushActive), proactive messages arrive as Expo
+ * pushes, so a background-task run only syncs and marks due messages handled instead
+ * of notifying them a second time. Manual runs still notify (to test this path).
  */
 export async function runBackgroundSync(source: RunSource): Promise<BackgroundRunResult> {
   const appState = AppState.currentState ?? 'unknown';
@@ -95,7 +99,9 @@ export async function runBackgroundSync(source: RunSource): Promise<BackgroundRu
       const lastSeenRev = await kvGetNumber(KV.lastSeenRev);
       const due = selectNotifiable(await listAssistantAbove(lastSeenRev), lastSeenRev);
       const content = buildNotificationContent(due);
-      if (content) {
+      if (content && source !== 'manual' && (await pushActive())) {
+        await markNotified(due.map((m) => m.id));
+      } else if (content) {
         if (await canNotify()) {
           await Notifications.scheduleNotificationAsync({
             content: { ...content, data: { url: '/', messageIds: due.map((m) => m.id) } },

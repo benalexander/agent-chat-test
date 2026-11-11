@@ -1,4 +1,4 @@
-/** Debug tab: inject events, inspect the agent, and measure background notifications. */
+/** Debug tab: inject events, inspect the agent, and measure push and background notifications. */
 import type { DebugActionResponse, DebugState, InjectMilestoneRequest } from '@agent-chat/shared';
 import * as BackgroundTask from 'expo-background-task';
 import * as Clipboard from 'expo-clipboard';
@@ -20,6 +20,7 @@ import { emit } from '../lib/events';
 import { deviceTimezone, errorMessage, formatDateTime, formatDuration } from '../lib/format';
 import { getUserId } from '../lib/identity';
 import { runBackgroundSync } from '../sync/background';
+import { registerPushToken, type PushSetup } from '../sync/push';
 import { delayStats } from '../sync/merge';
 import { runSync } from '../sync/sync';
 
@@ -28,12 +29,13 @@ const QUICK_AMOUNTS = [5, 20, 50, 100];
 const MILESTONES: InjectMilestoneRequest['percent'][] = [25, 50, 75, 100];
 
 async function loadLocal() {
-  const [runs, deliveries, lastRev, lastSeenRev, bgSetup, userId, perm] = await Promise.all([
+  const [runs, deliveries, lastRev, lastSeenRev, bgSetup, pushSetup, userId, perm] = await Promise.all([
     listBgRuns(),
     listDeliveries(),
     kvGetNumber(KV.lastRev),
     kvGetNumber(KV.lastSeenRev),
     kvGet(KV.backgroundSetup),
+    kvGet(KV.pushSetup),
     getUserId(),
     Notifications.getPermissionsAsync(),
   ]);
@@ -47,6 +49,7 @@ async function loadLocal() {
     lastRev,
     lastSeenRev,
     bgSetup: bgSetup ? (JSON.parse(bgSetup) as { at: number; note: string }) : null,
+    pushSetup: pushSetup ? (JSON.parse(pushSetup) as PushSetup) : null,
     userId,
     permission: {
       status: perm.status,
@@ -56,7 +59,8 @@ async function loadLocal() {
     },
     stats: {
       background: delayStats(bgDeliveries.map((d) => d.delayMs)),
-      all: delayStats(deliveries.map((d) => d.delayMs)),
+      push: delayStats(deliveries.filter((d) => d.source === 'push').map((d) => d.delayMs)),
+      all: delayStats(deliveries.filter((d) => d.source === 'local').map((d) => d.delayMs)),
       bgRunsLast24h: bgRuns.filter((r) => now - r.wokeAt < DAY_MS).length,
       bgRunsTotal: bgRuns.length,
     },
@@ -153,6 +157,7 @@ export default function DebugScreen() {
           apiUrl: API_URL,
           permission: local?.permission,
           backgroundSetup: local?.bgSetup,
+          pushSetup: local?.pushSetup,
           stats: local?.stats,
           bgRuns: local?.runs,
           deliveries: local?.deliveries,
@@ -168,6 +173,7 @@ export default function DebugScreen() {
   const pct = c ? Math.round((c.raised / c.target) * 100) : 0;
   const daysLeft = c && server ? Math.max(0, Math.ceil((c.endsAt - server.fetchedAt) / DAY_MS)) : 0;
   const s = local?.stats.background;
+  const ps = local?.stats.push;
 
   return (
     <View style={styles.screen}>
@@ -295,8 +301,7 @@ export default function DebugScreen() {
         <Section title="LLM calls">
           {server?.llmLog.length ? (
             server.llmLog
-              .slice(-15)
-              .reverse()
+              .slice(0, 15)
               .map((l, i) => (
                 <Text key={`${l.at}-${i}`} variant="mono">
                   {`${formatDateTime(l.at)} ${l.kind}${l.trigger ? `/${l.trigger}` : ''} ${l.inputTokens}→${l.outputTokens} tok ${formatDuration(l.latencyMs)}${l.outcome ? ` ${l.outcome}` : ''}${l.note ? ` (${l.note})` : ''}`}
@@ -310,8 +315,7 @@ export default function DebugScreen() {
         <Section title="Proactive log">
           {server?.proactiveLog.length ? (
             server.proactiveLog
-              .slice(-15)
-              .reverse()
+              .slice(0, 15)
               .map((p, i) => (
                 <Text key={`${p.at}-${i}`} variant="mono">
                   {`${formatDateTime(p.at)} ${p.trigger} → ${p.outcome}${p.reason ? ` (${p.reason})` : ''}`}
@@ -319,6 +323,51 @@ export default function DebugScreen() {
               ))
           ) : (
             <Text tone="muted">None yet</Text>
+          )}
+        </Section>
+
+        <Section title="Push notifications">
+          <KeyValue label="Device" value={local?.pushSetup?.note ?? '–'} />
+          <KeyValue
+            label="Server token"
+            value={server ? (server.push.tokenTail ? `…${server.push.tokenTail}` : 'none') : '–'}
+          />
+          <KeyValue
+            label="Delay (push) median / p90 / max"
+            value={ps ? `${formatDuration(ps.medianMs)} / ${formatDuration(ps.p90Ms)} / ${formatDuration(ps.maxMs)}` : '–'}
+          />
+          <KeyValue label="Pushes measured" value={local ? String(ps?.count ?? 0) : '–'} />
+          <View style={styles.row}>
+            <PillButton
+              kind="outline"
+              label="Register token"
+              busy={busy === 'pushreg'}
+              onPress={() =>
+                act('pushreg', 'Register push token', async () => {
+                  const r = await registerPushToken();
+                  return r.note;
+                })
+              }
+            />
+            <PillButton
+              label="Send test push"
+              busy={busy === 'pushtest'}
+              onPress={() => act('pushtest', 'Test push', () => debugApi.pushTest())}
+            />
+          </View>
+          <Text variant="caption" tone="muted">
+            Delay = when iOS delivered the push − when the server created the message. Measured when you open the
+            app (from Notification Centre), tap a push, or receive one in the foreground; pushes swiped away are
+            missed. Background it after tapping “Send test push” to see the banner.
+          </Text>
+          {server?.push.log.length ? (
+            server.push.log.slice(0, 15).map((p, i) => (
+              <Text key={`${p.at}-${i}`} variant="mono" tone={p.ticket === 'error' || p.receipt === 'error' ? 'danger' : undefined}>
+                {`${formatDateTime(p.at)} ${p.kind} ticket ${p.ticket}${p.receipt ? ` · receipt ${p.receipt}` : ''}${p.error ? ` · ${p.error}` : ''}`}
+              </Text>
+            ))
+          ) : (
+            <Text tone="muted">No pushes yet</Text>
           )}
         </Section>
 
@@ -385,9 +434,12 @@ export default function DebugScreen() {
               label="Trigger task worker (debug build)"
               busy={busy === 'trigger'}
               onPress={() =>
-                act('trigger', 'Trigger task worker', async () =>
-                  (await BackgroundTask.triggerTaskWorkerForTestingAsync()) ? 'triggered' : 'not triggered',
-                )
+                act('trigger', 'Trigger task worker', async () => {
+                  // Native side returns void, so the result is always falsy: check the runs list below
+                  // for a new "bg [active]" row instead.
+                  await BackgroundTask.triggerTaskWorkerForTestingAsync();
+                  return 'requested; a "bg" run should appear below';
+                })
               }
             />
           ) : null}

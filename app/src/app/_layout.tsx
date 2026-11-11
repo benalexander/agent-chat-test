@@ -14,6 +14,8 @@ import { TabBarContainer, TabButton } from '../components/TabBar';
 import { KV, kvGet, kvSet } from '../db/repo';
 import { useUnread } from '../hooks/useUnread';
 import { registerBackgroundSync } from '../sync/background';
+import { parsePushData } from '../sync/merge';
+import { recordNotification, recordPresentedNotifications, registerPushToken } from '../sync/push';
 import { runSync } from '../sync/sync';
 import { fonts } from '../theme/fonts';
 
@@ -53,9 +55,13 @@ export default function RootLayout() {
       if (!registered) {
         registered = true;
         registerBackgroundSync().catch(() => undefined);
-        requestNotificationsOnce().catch(() => undefined);
+        requestNotificationsOnce()
+          .catch(() => undefined)
+          .then(registerPushToken)
+          .catch(() => undefined);
       }
       runSync({ reason: 'foreground' }).catch(() => undefined);
+      recordPresentedNotifications().catch(() => undefined);
     };
     if (AppState.currentState === 'active') onActive();
     const sub = AppState.addEventListener('change', (s) => {
@@ -68,12 +74,26 @@ export default function RootLayout() {
   useEffect(() => {
     // Cold start from a notification already lands on Coach (the initial route),
     // so just consume the stored response rather than navigating before mount.
-    if (Notifications.getLastNotificationResponse()) Notifications.clearLastNotificationResponse();
-    const sub = Notifications.addNotificationResponseReceivedListener(() => {
+    const last = Notifications.getLastNotificationResponse();
+    if (last) {
+      recordNotification(last.notification).catch(() => undefined);
+      Notifications.clearLastNotificationResponse();
+    }
+    const sub = Notifications.addNotificationResponseReceivedListener((r) => {
+      recordNotification(r.notification).catch(() => undefined);
       openCoach();
       Notifications.clearLastNotificationResponse();
     });
-    return () => sub.remove();
+    // A push arriving while the app is running: record it and pull the message in.
+    const received = Notifications.addNotificationReceivedListener((n) => {
+      if (!parsePushData(n.request.content.data)) return;
+      recordNotification(n).catch(() => undefined);
+      runSync({ reason: 'push' }).catch(() => undefined);
+    });
+    return () => {
+      sub.remove();
+      received.remove();
+    };
   }, []);
 
   if (!fontsLoaded && !fontError) return null;

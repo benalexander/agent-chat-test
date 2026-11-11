@@ -23,6 +23,9 @@ import type {
   MessageMetadata,
   ProactiveLogEntry,
   ProactiveTrigger,
+  PushData,
+  PushLogEntry,
+  PushState,
   SyncMessage,
   SyncResponse,
   TokenTotals,
@@ -35,11 +38,13 @@ import { checkGuardrails, checkinDue, countOnLocalDay, inactivityDue, isValidTim
 import { createModel, reportedModelName } from './llm';
 import { messageText, metadataOf, revContent, toSyncMessage, withDefaultMetadata } from './messages';
 import { proactiveInstruction, systemPrompt, type ProactiveContext } from './prompts';
+import { getReceipts, PUSH_TITLE, pushPreview, RECEIPT_DELAY_SECONDS, sendPush } from './push';
 import { registryStub } from './registry';
 import {
   DonationSchema,
   ForceSchema,
   MilestoneSchema,
+  PushTokenSchema,
   readJson,
   type CampaignPatch,
   type DonationInput,
@@ -55,7 +60,13 @@ const KV = {
   lastUserMessageAt: 'last_user_message_at',
   lastInactivityAt: 'last_inactivity_at',
   lastCheckinAt: 'last_checkin_at',
+  pushToken: 'push_token',
 } as const;
+
+interface StoredPushToken {
+  token: string;
+  updatedAt: number;
+}
 
 const ChatRequestSchema = z.object({
   clientMessageId: z.string().min(1).max(200),
@@ -86,6 +97,8 @@ function deferred<T>(): Deferred<T> {
 export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
   /** Test hook: per-chunk delay for the mock model's streaming. */
   mockChunkDelayMs: number | undefined;
+  /** Test hook: replaces fetch for calls to the Expo push service. */
+  pushFetch: typeof fetch | undefined;
 
   #store: CoachStore | undefined;
   /**
@@ -527,7 +540,107 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     };
     await this.persistMessages([...this.messages, message]);
     this.logProactive(ctx.trigger, 'sent', opts.force ? 'forced' : undefined, createdAt);
+    // Best effort: a failed push is logged but never un-sends the message (the app
+    // still gets it on its next sync).
+    await this.push('proactive', pushPreview(text), { messageId: message.id, createdAt });
     return { outcome: 'sent', message: text };
+  }
+
+  // ---- push ------------------------------------------------------------------------------
+
+  private pushToken(): StoredPushToken | null {
+    return this.store.get<StoredPushToken | null>(KV.pushToken) ?? null;
+  }
+
+  /** Latest device wins. Idempotent, and cheap to call on every app launch. */
+  setPushToken(token: string): void {
+    if (this.pushToken()?.token === token) return;
+    this.store.set(KV.pushToken, { token, updatedAt: Date.now() } satisfies StoredPushToken);
+  }
+
+  private pushState(): PushState {
+    const t = this.pushToken();
+    return { tokenTail: t ? t.token.slice(-12) : null, tokenUpdatedAt: t?.updatedAt ?? null, log: this.store.pushLog() };
+  }
+
+  /**
+   * Send one push via Expo and log the ticket; schedule a receipt check for accepted
+   * tickets. A DeviceNotRegistered error drops the token. Never throws.
+   */
+  private async push(
+    kind: PushLogEntry['kind'],
+    body: string,
+    extra: { messageId?: string; createdAt?: number } = {},
+  ): Promise<PushLogEntry> {
+    const at = Date.now();
+    const base = { at, kind, ...(extra.messageId ? { messageId: extra.messageId } : {}) };
+    const stored = this.pushToken();
+    if (!stored) {
+      const entry: PushLogEntry = { ...base, ticket: 'no_token' };
+      this.store.logPush(entry);
+      return entry;
+    }
+    const data: PushData = { url: '/', kind, ...extra };
+    const ticket = await sendPush(
+      { to: stored.token, title: PUSH_TITLE, body, data, sound: 'default', priority: 'high' },
+      { accessToken: this.env.EXPO_ACCESS_TOKEN || undefined, fetchFn: this.pushFetch },
+    );
+    let entry: PushLogEntry;
+    if (ticket.status === 'ok') {
+      entry = { ...base, ticket: 'ok', ticketId: ticket.id };
+      this.store.logPush(entry);
+      try {
+        await this.schedule(RECEIPT_DELAY_SECONDS, 'checkPushReceipts', { ticketIds: [ticket.id] });
+      } catch (e) {
+        console.error('[CoachAgent] could not schedule receipt check', e);
+      }
+    } else {
+      entry = { ...base, ticket: 'error', error: ticket.error };
+      this.store.logPush(entry);
+      this.dropTokenIfDead(ticket.error, stored.token);
+    }
+    return entry;
+  }
+
+  private dropTokenIfDead(error: string, token: string): void {
+    // Only clear the token we tried: the device may have registered a new one meanwhile.
+    if (error === 'DeviceNotRegistered' && this.pushToken()?.token === token) {
+      this.store.set(KV.pushToken, null);
+    }
+  }
+
+  /** Scheduled RECEIPT_DELAY_SECONDS after an accepted push. */
+  async checkPushReceipts(payload: { ticketIds: string[] }): Promise<void> {
+    const ids = payload?.ticketIds ?? [];
+    if (ids.length === 0) return;
+    const token = this.pushToken()?.token;
+    let receipts;
+    try {
+      receipts = await getReceipts(ids, { accessToken: this.env.EXPO_ACCESS_TOKEN || undefined, fetchFn: this.pushFetch });
+    } catch (e) {
+      console.error('[CoachAgent] getReceipts failed', e);
+      return;
+    }
+    const now = Date.now();
+    for (const id of ids) {
+      const r = receipts[id];
+      if (!r) continue; // unknown to Expo (expired after 24 h); leave the entry as is
+      if (r.status === 'ok') {
+        this.store.updatePush(id, { receipt: 'ok', receiptAt: now });
+      } else {
+        this.store.updatePush(id, { receipt: 'error', receiptAt: now, error: r.error });
+        if (token) this.dropTokenIfDead(r.error, token);
+      }
+    }
+  }
+
+  /** Debug/admin: send a test push now (no message is created). */
+  async sendTestPush(): Promise<DebugActionResponse> {
+    const e = await this.push('test', 'Test notification from your coach');
+    return {
+      ok: e.ticket === 'ok',
+      message: e.ticket === 'ok' ? `accepted by Expo (${e.ticketId})` : e.ticket === 'no_token' ? 'no push token registered' : e.error,
+    };
   }
 
   /** Recurring schedule callback (see ensureSchedules). */
@@ -583,6 +696,7 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
       proactiveSentToday: countOnLocalDay(this.store.proactiveSentAt(), now, tz),
       llmLog: this.store.llmLog(),
       proactiveLog: this.store.proactiveLog(),
+      push: this.pushState(),
       schedules: this.getSchedules().map((s) => ({
         id: s.id,
         callback: String(s.callback),
@@ -629,7 +743,7 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     return { ok: true, ...r };
   }
 
-  /** Wipe messages, logs and state (keeps the device timezone and rev counter); reseed. */
+  /** Wipe messages, logs and state (keeps the device timezone, push token and rev counter); reseed. */
   async resetAgent(): Promise<DebugActionResponse> {
     this.resetTurnState();
     for (const s of this.#httpSinks.values()) s.resolve(new ReadableStream({ start: (c) => c.close() }));
@@ -640,8 +754,10 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     this.store.clearRevs();
     this.store.clearLogs();
     const tz = this.storedTimezone();
+    const pushToken = this.pushToken();
     this.store.clearKv();
     if (tz) this.store.set(KV.timezone, tz);
+    if (pushToken) this.store.set(KV.pushToken, pushToken);
     this.seed(); // pushes the (now empty) summary
     for (const s of this.getSchedules()) {
       if (s.callback === 'proactiveTick') await this.cancelSchedule(s.id);
@@ -724,6 +840,14 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
       if (method === 'POST' && route === 'chat') return await this.handleChat(request);
       if (method === 'GET' && route === 'messages') return this.handleMessages(url);
       if (method === 'GET' && route === 'debug/state') return json(await this.getDebugState());
+      if (method === 'PUT' && route === 'push-token') {
+        const body = await readJson(request);
+        if (body === undefined) return json({ error: 'invalid_json' }, 400);
+        const p = PushTokenSchema.safeParse(body);
+        if (!p.success) return json({ error: 'invalid_body', details: p.error.issues }, 400);
+        this.setPushToken(p.data.token);
+        return json({ ok: true });
+      }
 
       if (method === 'POST' && route.startsWith('debug/')) {
         const body = await readJson(request);
@@ -748,6 +872,8 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
           }
           case 'debug/reset':
             return json(await this.resetAgent());
+          case 'debug/push-test':
+            return json(await this.sendTestPush());
         }
       }
       return json({ error: 'not_found', route }, 404);

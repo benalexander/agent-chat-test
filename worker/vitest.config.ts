@@ -17,6 +17,7 @@ export default defineConfig({
           LLM_MODE: 'mock',
           DEV_MODE: 'true',
           ANTHROPIC_API_KEY: '',
+          EXPO_ACCESS_TOKEN: '',
         },
       },
     }),

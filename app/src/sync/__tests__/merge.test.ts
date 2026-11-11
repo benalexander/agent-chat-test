@@ -6,7 +6,9 @@ import {
   countUnread,
   delayStats,
   mergeSyncResponse,
+  parsePushData,
   selectNotifiable,
+  shouldPresent,
   type LocalMessage,
 } from '../merge';
 
@@ -199,5 +201,29 @@ describe('delayStats', () => {
   it('computes nearest-rank median / p90 / max', () => {
     const d = [10, 1, 9, 2, 8, 3, 7, 4, 6, 5];
     expect(delayStats(d)).toEqual({ count: 10, medianMs: 5, p90Ms: 9, maxMs: 10 });
+  });
+});
+
+describe('push', () => {
+  const proactive = { url: '/', kind: 'proactive', messageId: 'p1', createdAt: 1000 };
+
+  it('parsePushData accepts only our pushes', () => {
+    expect(parsePushData(proactive)).toEqual(proactive);
+    expect(parsePushData({ url: '/', kind: 'test' })).toEqual({ url: '/', kind: 'test' });
+    expect(parsePushData({ url: '/', messageIds: ['a'] })).toBeNull(); // local notification
+    expect(parsePushData(null)).toBeNull();
+    expect(parsePushData({ kind: 'proactive', messageId: 7 })).toEqual({ url: '/', kind: 'proactive' });
+  });
+
+  it('hides a proactive push only while Coach is on screen in the foreground', () => {
+    expect(shouldPresent(proactive, { appActive: true, coachVisible: true })).toBe(false);
+    expect(shouldPresent(proactive, { appActive: true, coachVisible: false })).toBe(true);
+    expect(shouldPresent(proactive, { appActive: false, coachVisible: true })).toBe(true);
+  });
+
+  it('always shows test pushes and local notifications', () => {
+    const ctx = { appActive: true, coachVisible: true };
+    expect(shouldPresent({ url: '/', kind: 'test' }, ctx)).toBe(true);
+    expect(shouldPresent({ url: '/', messageIds: ['a'] }, ctx)).toBe(true);
   });
 });

@@ -27,6 +27,7 @@ export function Sidebar({ detail, tz, refresh, onDeleted }: Props) {
     <aside className="sidebar">
       <CampaignPanel userId={userId} campaign={detail.state.campaign} tz={tz} refresh={refresh} />
       <ActionsPanel userId={userId} refresh={refresh} />
+      <PushPanel detail={detail} tz={tz} refresh={refresh} />
       <InfoPanel detail={detail} />
       <SchedulesPanel detail={detail} tz={tz} />
       <TokensPanel detail={detail} tz={tz} />
@@ -343,6 +344,66 @@ function ActionsPanel({ userId, refresh }: { userId: string; refresh: () => Prom
         <p className="note">Bypasses guardrails (daily cap, quiet hours, 10-min cooldown after the user's last message).</p>
         <ResultLine result={proactive.result} />
       </form>
+    </Panel>
+  );
+}
+
+// ---- Push --------------------------------------------------------------------------
+
+function PushPanel({ detail, tz, refresh }: { detail: AdminUserDetail; tz: string; refresh: () => Promise<void> }) {
+  const p = detail.state.push;
+  const userId = detail.user.userId;
+  const test = useAction(refresh);
+  return (
+    <Panel title="Push">
+      <dl className="dl">
+        <Row label="Token">
+          {p.tokenTail ? <span className="mono">…{p.tokenTail}</span> : <span className="muted">none registered</span>}
+        </Row>
+        {p.tokenUpdatedAt !== null && (
+          <Row label="Updated">
+            <Time ms={p.tokenUpdatedAt} tz={tz} />
+          </Row>
+        )}
+      </dl>
+      <button
+        className="btn"
+        disabled={test.busy}
+        onClick={() => void test.run(async () => describe(await api.testPush(userId)))}
+      >
+        Send test push
+      </button>
+      <ResultLine result={test.result} />
+      {p.log.length > 0 && (
+        <details className="part-collapsible">
+          <summary>Push log ({p.log.length})</summary>
+          <table className="table compact">
+            <thead>
+              <tr>
+                <th>At</th>
+                <th>Kind</th>
+                <th>Ticket</th>
+                <th>Receipt</th>
+              </tr>
+            </thead>
+            <tbody>
+              {p.log.map((e, i) => (
+                <tr key={i} title={[e.messageId, e.ticketId, e.error].filter(Boolean).join(' · ')}>
+                  <td>
+                    <Time ms={e.at} tz={tz} />
+                  </td>
+                  <td>{e.kind}</td>
+                  <td className={e.ticket === 'error' ? 'error-inline' : undefined}>{e.ticket}</td>
+                  <td className={e.receipt === 'error' ? 'error-inline' : undefined}>
+                    {e.receipt ?? (e.ticket === 'ok' ? 'pending' : '–')}
+                    {e.error ? ` (${e.error})` : ''}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
     </Panel>
   );
 }
