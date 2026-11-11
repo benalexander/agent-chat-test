@@ -10,7 +10,9 @@ import {
 } from '../src/guardrails';
 import { getTimings } from '../src/config';
 
-const rules = getTimings(false); // prod: 2/day, 21:00–08:00, 10-min cooldown
+// Prod quiet hours (21:00–08:00) and 10-min cooldown, with the cap pinned at 2/day so the
+// tests don't depend on the tunable trial value.
+const rules = { ...getTimings(false), maxPerDay: 2 };
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 

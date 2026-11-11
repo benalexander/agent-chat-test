@@ -52,7 +52,7 @@ Respond ONLY with JSON: {"send": boolean, "message": string}. If send is false, 
 There have been no new donations and no messages from the fundraiser for a while. Write a gentle, low-pressure nudge (2–3 sentences) with one concrete, easy idea to get things moving (e.g. sharing a training update). No guilt.`;
     case 'checkin':
       return `${head}
-It's the regular evening check-in. Write a friendly 2–3 sentence check-in: a quick progress note and an open question about how training or fundraising is going.`;
+It's a regular check-in (it may be any time of day, so don't assume morning or evening). Write a friendly 2–3 sentence check-in: a quick progress note and an open question about how training or fundraising is going. Check-ins can be frequent, so don't repeat the wording, angle or question of your recent messages; vary it (a fundraising tip, a training nudge, a sharing idea, or a short question).`;
     case 'manual':
     default:
       return `${head}

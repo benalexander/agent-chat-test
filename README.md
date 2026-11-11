@@ -33,7 +33,7 @@ Things to try:
 - **Debug tab**: inject a donation (crossing 50% triggers a milestone message), force a proactive message, watch it appear on Coach within ~10 s.
 - **Debug → Run background sync now**: exercises the background-task code path in the foreground (posts a notification on the simulator).
 
-Proactive messages obey quiet hours (21:00–08:00 in the device timezone), 2/day, and a cooldown after your last message (30 s in `DEV_MODE`). "Force proactive" bypasses them.
+Proactive messages obey quiet hours (21:00–08:00 in the device timezone), a daily cap (20/day for the initial trial), and a cooldown after your last message (30 s in `DEV_MODE`). "Force proactive" bypasses them.
 
 ## Admin panel
 

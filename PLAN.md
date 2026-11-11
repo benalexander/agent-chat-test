@@ -52,6 +52,7 @@ Out of scope: auth, multi-campaign, Android, production hardening, cost modellin
   - `milestone` — 25/50/75/100%, always messages (fires when a donation crosses a threshold, or injected).
   - `inactivity` — 4 days with no donations and no user messages.
   - `checkin` — scheduled every 3 days at 18:00 local.
+  - **Initial trial override (2026-11-11):** with `DEV_MODE=false`, check-ins are hourly (no 18:00 gate), inactivity fires after 2 h of silence (repeating every 2 h), and the daily cap is 20. Quiet hours and the 10-min cooldown are unchanged. See `worker/src/config.ts`.
 - Guardrails: max 2 proactive/day, quiet hours 21:00–08:00 device-local, nothing within 10 min of the user's last message. Messages blocked by guardrails are dropped (and logged), not queued.
 - Dev: "force proactive now" bypasses guardrails; `DEV_MODE` env var compresses intervals to minutes.
 

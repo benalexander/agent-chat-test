@@ -1,6 +1,5 @@
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
 
 export const DEFAULT_TIMEZONE = 'Australia/Melbourne';
 export const DEFAULT_MODEL = 'claude-sonnet-5-5';
@@ -15,9 +14,9 @@ export interface ProactiveTimings {
   tickIntervalSeconds: number;
   /** No donations and no user messages for this long → inactivity trigger. */
   inactivityThresholdMs: number;
-  /** Check-in cadence. In prod also gated to 18:00–21:00 local. */
+  /** Check-in cadence. If checkinAtLocalHour is set, also gated to that local hour. */
   checkinIntervalMs: number;
-  /** Only check in during the local evening window (prod only). */
+  /** Only check in during this local hour (null = no time-of-day gate). */
   checkinAtLocalHour: number | null;
   /** Nothing proactive within this long of the user's last message. */
   cooldownMs: number;
@@ -39,14 +38,18 @@ export function getTimings(devMode: boolean): ProactiveTimings {
       quietEndHour: 8,
     };
   }
+  // Initial device trial (2026-11-11): hourly check-ins, inactivity after 2 h, 20/day cap,
+  // so background notifications get exercised often. Original design (PLAN.md): check-in
+  // every 3 days at 18:00 local (checkinAtLocalHour: 18, 15-min tick), inactivity after
+  // 4 days, 2/day.
   return {
-    // 15 min so the 18:00 check-in lands within the 18:00 hour.
-    tickIntervalSeconds: 15 * 60,
-    inactivityThresholdMs: 4 * DAY,
-    checkinIntervalMs: 3 * DAY,
-    checkinAtLocalHour: 18,
+    // 5 min so hourly check-ins don't drift much (the tick itself makes no LLM call).
+    tickIntervalSeconds: 5 * 60,
+    inactivityThresholdMs: 2 * HOUR,
+    checkinIntervalMs: 1 * HOUR,
+    checkinAtLocalHour: null,
     cooldownMs: 10 * MINUTE,
-    maxPerDay: 2,
+    maxPerDay: 20,
     quietStartHour: 21,
     quietEndHour: 8,
   };

@@ -31,7 +31,7 @@ curl -H "Authorization: Bearer dev-admin" -H "content-type: application/json" \
   -X PATCH localhost:8787/admin/api/users/test-user/campaign -d '{"raised":260}'
 ```
 
-Proactive messages respect quiet hours (21:00–08:00 in the `X-Timezone` you send), a 2/day cap, and a cooldown after your last message (30 s in `DEV_MODE`, 10 min otherwise). Use `POST debug/proactive` to force one.
+Proactive messages respect quiet hours (21:00–08:00 in the `X-Timezone` you send), a daily cap (20/day for the initial trial; check-ins hourly, inactivity after 2 h with `DEV_MODE=false`), and a cooldown after your last message (30 s in `DEV_MODE`, 10 min otherwise). Use `POST debug/proactive` to force one.
 
 ## Config
 
