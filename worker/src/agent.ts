@@ -34,7 +34,14 @@ import type {
 } from '@agent-chat/shared';
 import { applyDonation, campaignSummary, recentDonations, seedCampaign } from './campaign';
 import { DEFAULT_TIMEZONE, getTimings, HISTORY_WINDOW, isDevMode, MILESTONES } from './config';
-import { checkGuardrails, checkinDue, countOnLocalDay, inactivityDue, isValidTimezone } from './guardrails';
+import {
+  checkGuardrails,
+  checkinDue,
+  countOnLocalDay,
+  inactivityDue,
+  isValidTimezone,
+  triggerCapReached,
+} from './guardrails';
 import { createModel, reportedModelName } from './llm';
 import { messageText, metadataOf, revContent, toSyncMessage, withDefaultMetadata } from './messages';
 import { proactiveInstruction, systemPrompt, type ProactiveContext } from './prompts';
@@ -643,14 +650,22 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     };
   }
 
-  /** Recurring schedule callback (see ensureSchedules). */
+  /**
+   * Recurring schedule callback (see ensureSchedules). A trigger that has hit its
+   * per-day cap is skipped here, before runProactive: no LLM call and no log row. Its
+   * last-attempt time isn't advanced, so it stays due and fires on the next local day.
+   */
   async proactiveTick(): Promise<void> {
     const now = Date.now();
     const timings = getTimings(isDevMode(this.env));
+    const tz = this.timezone();
+    const capped = (trigger: ProactiveTrigger) =>
+      triggerCapReached(trigger, this.store.proactiveSentAt(trigger), now, tz, timings);
     const c = this.campaign();
     const lastUser = this.store.get<number>(KV.lastUserMessageAt) ?? 0;
     const lastActivityAt = Math.max(c.lastActivityAt, lastUser);
     if (
+      !capped('inactivity') &&
       inactivityDue({
         now,
         lastActivityAt,
@@ -663,9 +678,10 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
       return;
     }
     if (
+      !capped('checkin') &&
       checkinDue({
         now,
-        timeZone: this.timezone(),
+        timeZone: tz,
         lastCheckinAt: this.store.get<number>(KV.lastCheckinAt) ?? c.startedAt,
         intervalMs: timings.checkinIntervalMs,
         atLocalHour: timings.checkinAtLocalHour,

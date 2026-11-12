@@ -2,6 +2,7 @@
  * Pure proactive-messaging rules. No I/O, no Date.now() — everything is passed in
  * so it can be unit tested across timezones.
  */
+import type { ProactiveTrigger } from '@agent-chat/shared';
 
 export interface LocalTime {
   year: number;
@@ -80,6 +81,8 @@ export function countOnLocalDay(timestamps: number[], now: number, timeZone: str
 
 export interface GuardrailRules {
   maxPerDay: number;
+  /** Per-trigger daily caps (missing trigger = only maxPerDay applies). */
+  maxPerDayByTrigger?: Partial<Record<ProactiveTrigger, number>>;
   quietStartHour: number;
   quietEndHour: number;
   cooldownMs: number;
@@ -116,6 +119,22 @@ export function checkGuardrails(input: GuardrailInput): GuardrailDecision {
 }
 
 // ---- Trigger timing (also pure) ---------------------------------------------
+
+/**
+ * True if `trigger` has used up its per-day allowance (rules.maxPerDayByTrigger) on the
+ * local day of `now`. Checked by the tick before an attempt, so a capped trigger is
+ * skipped silently: no LLM call, no proactive-log row.
+ */
+export function triggerCapReached(
+  trigger: ProactiveTrigger,
+  triggerSentAt: number[],
+  now: number,
+  timeZone: string,
+  rules: Pick<GuardrailRules, 'maxPerDayByTrigger'>,
+): boolean {
+  const cap = rules.maxPerDayByTrigger?.[trigger];
+  return cap !== undefined && countOnLocalDay(triggerSentAt, now, timeZone) >= cap;
+}
 
 export interface InactivityInput {
   now: number;

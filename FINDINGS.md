@@ -36,7 +36,7 @@ Fill in after a multi-day trial on a physical iPhone against the deployed worker
 | inactivity | | | | |
 | checkin | | | | |
 
-- Guardrails (trial: 20/day, hourly check-ins, 2 h inactivity; quiet hours, cooldown) — right values for real use?
+- Guardrails (trial: 20/day, hourly check-ins capped 2/day, 2 h inactivity capped 1/day; quiet hours, cooldown) — right values for real use?
 - Token cost per proactive message (from Debug token log):
 
 **Verdict:**

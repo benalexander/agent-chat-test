@@ -1,3 +1,5 @@
+import type { ProactiveTrigger } from '@agent-chat/shared';
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
@@ -21,6 +23,8 @@ export interface ProactiveTimings {
   /** Nothing proactive within this long of the user's last message. */
   cooldownMs: number;
   maxPerDay: number;
+  /** Per-trigger sends per local day, on top of maxPerDay (missing = no extra cap). */
+  maxPerDayByTrigger: Partial<Record<ProactiveTrigger, number>>;
   quietStartHour: number;
   quietEndHour: number;
 }
@@ -34,12 +38,14 @@ export function getTimings(devMode: boolean): ProactiveTimings {
       checkinAtLocalHour: null,
       cooldownMs: 30_000,
       maxPerDay: 2,
+      maxPerDayByTrigger: {},
       quietStartHour: 21,
       quietEndHour: 8,
     };
   }
   // Initial device trial (2026-11-11): hourly check-ins, inactivity after 2 h, 20/day cap,
-  // so background notifications get exercised often. Original design (PLAN.md): check-in
+  // so background notifications get exercised often. From 2026-11-12 check-ins are capped
+  // at 2/day and inactivity at 1/day (skipped in the tick: no LLM call, no log). Original design (PLAN.md): check-in
   // every 3 days at 18:00 local (checkinAtLocalHour: 18, 15-min tick), inactivity after
   // 4 days, 2/day.
   return {
@@ -50,6 +56,7 @@ export function getTimings(devMode: boolean): ProactiveTimings {
     checkinAtLocalHour: null,
     cooldownMs: 10 * MINUTE,
     maxPerDay: 20,
+    maxPerDayByTrigger: { checkin: 2, inactivity: 1 },
     quietStartHour: 21,
     quietEndHour: 8,
   };

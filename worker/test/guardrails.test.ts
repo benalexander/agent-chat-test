@@ -6,6 +6,7 @@ import {
   inactivityDue,
   isQuietHours,
   localTime,
+  triggerCapReached,
   type GuardrailInput,
 } from '../src/guardrails';
 import { getTimings } from '../src/config';
@@ -52,6 +53,28 @@ describe('quiet hours (21:00–08:00 device-local)', () => {
   it('blocks proactive messages', () => {
     expect(checkGuardrails(input({ timeZone: 'Europe/London' }))).toEqual({ allowed: false, reason: 'quiet_hours' });
     expect(checkGuardrails(input())).toEqual({ allowed: true });
+  });
+});
+
+describe('per-trigger daily cap', () => {
+  const capped = { maxPerDayByTrigger: { checkin: 2, inactivity: 1 } };
+  const reached = (trigger: 'checkin' | 'inactivity' | 'donation', sent: number[]) =>
+    triggerCapReached(trigger, sent, T, 'Australia/Melbourne', capped);
+
+  it('caps check-ins at 2 and inactivity at 1 per local day', () => {
+    expect(reached('checkin', [T - HOUR])).toBe(false);
+    expect(reached('checkin', [T - 2 * HOUR, T - HOUR])).toBe(true);
+    expect(reached('inactivity', [])).toBe(false);
+    expect(reached('inactivity', [T - HOUR])).toBe(true);
+  });
+
+  it('resets on the next local day and leaves uncapped triggers alone', () => {
+    expect(reached('inactivity', [T - 28 * HOUR])).toBe(false);
+    expect(reached('donation', [T - 2 * HOUR, T - HOUR, T - MIN])).toBe(false);
+  });
+
+  it('trial timings cap check-ins at 2 and inactivity at 1', () => {
+    expect(getTimings(false).maxPerDayByTrigger).toEqual({ checkin: 2, inactivity: 1 });
   });
 });
 

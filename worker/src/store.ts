@@ -6,7 +6,7 @@
  *    not bumped on updates). `hash` detects whether a persisted message changed.
  *  - coach_llm_log / coach_proactive_log / coach_push_log: debug logs, capped at LOG_CAP rows.
  */
-import type { LlmLogEntry, ProactiveLogEntry, PushLogEntry } from '@agent-chat/shared';
+import type { LlmLogEntry, ProactiveLogEntry, ProactiveTrigger, PushLogEntry } from '@agent-chat/shared';
 import { LOG_CAP } from './config';
 
 /** cyrb53 — fast non-crypto string hash; only used for change detection. */
@@ -145,12 +145,15 @@ export class CoachStore {
       .map((r) => JSON.parse(r.entry) as ProactiveLogEntry);
   }
 
-  /** Timestamps of proactive messages actually sent (for the daily cap). */
-  proactiveSentAt(): number[] {
-    return this.sql
-      .exec<{ at: number }>(`SELECT at FROM coach_proactive_log WHERE outcome = 'sent'`)
-      .toArray()
-      .map((r) => r.at);
+  /** Timestamps of proactive messages actually sent (for the daily caps), optionally for one trigger. */
+  proactiveSentAt(trigger?: ProactiveTrigger): number[] {
+    const rows = trigger
+      ? this.sql.exec<{ at: number }>(
+          `SELECT at FROM coach_proactive_log WHERE outcome = 'sent' AND json_extract(entry, '$.trigger') = ?`,
+          trigger,
+        )
+      : this.sql.exec<{ at: number }>(`SELECT at FROM coach_proactive_log WHERE outcome = 'sent'`);
+    return rows.toArray().map((r) => r.at);
   }
 
   logPush(entry: PushLogEntry): void {
