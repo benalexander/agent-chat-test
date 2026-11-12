@@ -62,6 +62,27 @@ Admin routes for a userId not in the Registry return 404 `{ error: 'unknown_user
 
 Proactive messages are pushed via Expo (`src/push.ts`). The device registers its token with `PUT /api/:userId/push-token` (`ExponentPushToken[...]`; latest wins, kept across reset). Each send is logged (`DebugState.push.log`: ticket, then receipt ~15 min later via the `checkPushReceipts` schedule). `DeviceNotRegistered` clears the token. A failed push never fails the proactive message. Test: `POST /api/:userId/debug/push-test` or the admin "Send test push".
 
+## Observability
+
+**Logs.** Each notable step writes one structured event (`src/obs.ts`), all tagged with `user`:
+
+| `evt` | When | Key fields |
+|---|---|---|
+| `request` | every app/debug route | `method`, `route`, `status`, `ms` (for `chat`: time until the stream starts) |
+| `chat.start` | chat turn begins | `model`, `historyMessages` |
+| `llm` | every LLM call ends (chat + proactive) | `kind`, `trigger`, `inputTokens`, `outputTokens`, `latencyMs`, `ttftMs`, `outcome` |
+| `tick` | every proactive tick | `decision`: `inactivity`, `checkin`, `inactivity_capped`, `checkin_capped`, `nothing_due` |
+| `proactive` | every proactive attempt | `trigger`, `outcome`, `reason` (guardrail / error), `forced`, `ms` |
+| `push.send` / `push.receipt` / `push.token` | Expo push steps | `ticket`, `error`, `tokenDropped`, `changed` |
+| `sync` | `GET messages` | `since`, `returned`, `latestRev` |
+| `schedule` | each agent wake | `tickIntervalSeconds`, `cancelled` |
+
+Errors are logged with `level: "error"` (via `console.error`). View them in the dashboard (Workers → agent-chat-test → Observability → Events; filter e.g. `evt = tick` or `user = <id>`), or live with `npx wrangler tail --format pretty`.
+
+**Traces** (`observability.traces.enabled`). AI SDK calls go through `wrapAISDK` (`src/llm.ts`), so each chat turn / proactive generation shows as an agent run with model-call and tool spans, token usage and stored messages (`storeMessages`/`storeTools` on: conversation text is visible in the Cloudflare dashboard). Custom spans `coach.tick`, `coach.proactive` and `coach.push.send` nest alongside. See the dashboard's **Agents** tab, or Observability → Traces. Spans count as observability events (Workers Observability pricing).
+
+**AI Gateway** (optional, no code change): set `AI_GATEWAY_ACCOUNT_ID` + `AI_GATEWAY_ID` (and the `CF_AIG_TOKEN` secret for an authenticated gateway) to get per-request Anthropic logs with prompts, responses and cost.
+
 ## Registry
 
 `Registry` (SQLite DO, `idFromName('global')`) stores one `RegistryEntry` per user (`firstSeen`, `lastSeen`, `timezone`, `summary`). Writers:

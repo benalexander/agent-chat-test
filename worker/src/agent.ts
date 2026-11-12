@@ -1,10 +1,8 @@
 import { AIChatAgent, type OnChatMessageOptions } from '@cloudflare/ai-chat';
 import {
   convertToModelMessages,
-  generateText,
   Output,
   stepCountIs,
-  streamText,
   tool,
   type ModelMessage,
   type GenerateTextOnFinishCallback,
@@ -42,7 +40,8 @@ import {
   isValidTimezone,
   triggerCapReached,
 } from './guardrails';
-import { createModel, reportedModelName } from './llm';
+import { createModel, generateText, reportedModelName, streamText, traceIdentity } from './llm';
+import { errorText, logEvent, withSpan } from './obs';
 import { messageText, metadataOf, revContent, toSyncMessage, withDefaultMetadata } from './messages';
 import { proactiveInstruction, systemPrompt, type ProactiveContext } from './prompts';
 import { getReceipts, PUSH_TITLE, pushPreview, RECEIPT_DELAY_SECONDS, sendPush } from './push';
@@ -145,12 +144,15 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
    */
   private async ensureSchedules(): Promise<void> {
     const interval = getTimings(isDevMode(this.env)).tickIntervalSeconds;
+    let cancelled = 0;
     for (const s of this.getSchedules()) {
       if (s.callback === 'proactiveTick' && !(s.type === 'interval' && s.intervalSeconds === interval)) {
         await this.cancelSchedule(s.id);
+        cancelled++;
       }
     }
     await this.scheduleEvery(interval, 'proactiveTick');
+    logEvent('schedule', { user: this.name, tickIntervalSeconds: interval, cancelled });
   }
 
   // ---- state helpers -------------------------------------------------------------
@@ -178,8 +180,22 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     return this.storedTimezone() ?? DEFAULT_TIMEZONE;
   }
 
-  private log(entry: LlmLogEntry): void {
+  /** LLM call log: Debug/admin table plus an `llm` log event. */
+  private log(entry: LlmLogEntry, extra: { ttftMs?: number } = {}): void {
     this.store.logLlm(entry);
+    logEvent('llm', {
+      user: this.name,
+      kind: entry.kind,
+      trigger: entry.trigger,
+      model: entry.model,
+      inputTokens: entry.inputTokens,
+      outputTokens: entry.outputTokens,
+      latencyMs: entry.latencyMs,
+      ttftMs: extra.ttftMs,
+      outcome: entry.outcome,
+      note: entry.note,
+      level: entry.outcome === 'error' ? 'error' : undefined,
+    });
   }
 
   // ---- persistence + rev cursor ------------------------------------------------------
@@ -291,24 +307,34 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     const model = createModel(this.env, { campaign, now, chunkDelayMs: this.mockChunkDelayMs });
     const modelName = reportedModelName(this.env);
     const started = Date.now();
+    let ttftMs: number | undefined;
+    const history = await this.historyForModel(tools);
+    logEvent('chat.start', { user: this.name, model: modelName, historyMessages: history.length });
 
     const result = streamText({
       model,
       instructions: systemPrompt(campaign, now, tz),
-      messages: await this.historyForModel(tools),
+      messages: history,
       tools,
       stopWhen: stepCountIs(5),
       abortSignal: options?.abortSignal,
+      ...traceIdentity(this.name, 'chat'),
+      onChunk: () => {
+        ttftMs ??= Date.now() - started;
+      },
       onEnd: (event) => {
-        this.log({
-          at: Date.now(),
-          kind: 'chat',
-          model: modelName,
-          inputTokens: event.totalUsage.inputTokens ?? 0,
-          outputTokens: event.totalUsage.outputTokens ?? 0,
-          latencyMs: Date.now() - started,
-          note: `steps=${event.steps.length}`,
-        });
+        this.log(
+          {
+            at: Date.now(),
+            kind: 'chat',
+            model: modelName,
+            inputTokens: event.totalUsage.inputTokens ?? 0,
+            outputTokens: event.totalUsage.outputTokens ?? 0,
+            latencyMs: Date.now() - started,
+            note: `steps=${event.steps.length}${ttftMs !== undefined ? ` ttft=${ttftMs}ms` : ''}`,
+          },
+          { ttftMs },
+        );
       },
       onError: ({ error }) => {
         this.log({
@@ -441,6 +467,7 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
       if (sm) messages.push(sm);
     }
     const body: SyncResponse = { messages, latestRev: Math.max(since, this.store.latestRev()) };
+    logEvent('sync', { user: this.name, since, returned: messages.length, latestRev: body.latestRev });
     return json(body);
   }
 
@@ -456,6 +483,29 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
    * (logged), not queued.
    */
   async runProactive(ctx: ProactiveContext, opts: { force?: boolean } = {}): Promise<{ outcome: Outcome; message?: string }> {
+    const started = Date.now();
+    const attrs = { 'coach.user': this.name, 'coach.trigger': ctx.trigger, 'coach.forced': !!opts.force };
+    return withSpan('coach.proactive', attrs, async (setAttrs) => {
+      const r = await this.attemptProactive(ctx, opts);
+      setAttrs({ 'coach.outcome': r.outcome });
+      logEvent('proactive', {
+        user: this.name,
+        trigger: ctx.trigger,
+        outcome: r.outcome,
+        // blocked → guardrail reason, error → message; never the sent text
+        reason: r.outcome === 'sent' ? undefined : r.message,
+        forced: !!opts.force,
+        ms: Date.now() - started,
+        level: r.outcome === 'error' ? 'error' : undefined,
+      });
+      return r;
+    });
+  }
+
+  private async attemptProactive(
+    ctx: ProactiveContext,
+    opts: { force?: boolean },
+  ): Promise<{ outcome: Outcome; message?: string }> {
     const now = Date.now();
     const tz = this.timezone();
     const timings = getTimings(isDevMode(this.env));
@@ -493,6 +543,7 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
           instructions,
           messages,
           output: Output.object({ schema: DonationDecisionSchema }),
+          ...traceIdentity(this.name, `proactive.${ctx.trigger}`),
         });
         usage = res.totalUsage;
         const out = res.output;
@@ -500,7 +551,14 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
         if (!text) llmOutcome = 'skipped_by_llm';
       } else {
         // milestone / inactivity / checkin / manual always produce a message.
-        const res = await generateText({ model, instructions, messages, tools, stopWhen: stepCountIs(3) });
+        const res = await generateText({
+          model,
+          instructions,
+          messages,
+          tools,
+          stopWhen: stepCountIs(3),
+          ...traceIdentity(this.name, `proactive.${ctx.trigger}`),
+        });
         usage = res.totalUsage;
         text = res.text.trim();
         if (!text) throw new Error('empty proactive message');
@@ -561,7 +619,9 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
 
   /** Latest device wins. Idempotent, and cheap to call on every app launch. */
   setPushToken(token: string): void {
-    if (this.pushToken()?.token === token) return;
+    const changed = this.pushToken()?.token !== token;
+    logEvent('push.token', { user: this.name, changed, tokenTail: token.slice(-12) });
+    if (!changed) return;
     this.store.set(KV.pushToken, { token, updatedAt: Date.now() } satisfies StoredPushToken);
   }
 
@@ -578,6 +638,28 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     kind: PushLogEntry['kind'],
     body: string,
     extra: { messageId?: string; createdAt?: number } = {},
+  ): Promise<PushLogEntry> {
+    return withSpan('coach.push.send', { 'coach.user': this.name, 'coach.push.kind': kind }, async (setAttrs) => {
+      const entry = await this.sendAndLogPush(kind, body, extra);
+      setAttrs({ 'coach.push.ticket': entry.ticket, 'coach.push.error': entry.error });
+      logEvent('push.send', {
+        user: this.name,
+        kind,
+        messageId: entry.messageId,
+        ticket: entry.ticket,
+        ticketId: entry.ticketId,
+        error: entry.error,
+        tokenDropped: entry.error === 'DeviceNotRegistered' ? !this.pushToken() : undefined,
+        level: entry.ticket === 'error' ? 'error' : undefined,
+      });
+      return entry;
+    });
+  }
+
+  private async sendAndLogPush(
+    kind: PushLogEntry['kind'],
+    body: string,
+    extra: { messageId?: string; createdAt?: number },
   ): Promise<PushLogEntry> {
     const at = Date.now();
     const base = { at, kind, ...(extra.messageId ? { messageId: extra.messageId } : {}) };
@@ -599,7 +681,7 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
       try {
         await this.schedule(RECEIPT_DELAY_SECONDS, 'checkPushReceipts', { ticketIds: [ticket.id] });
       } catch (e) {
-        console.error('[CoachAgent] could not schedule receipt check', e);
+        logEvent('push.receipt', { user: this.name, ticketId: ticket.id, outcome: 'schedule_failed', error: errorText(e), level: 'error' });
       }
     } else {
       entry = { ...base, ticket: 'error', error: ticket.error };
@@ -625,12 +707,19 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     try {
       receipts = await getReceipts(ids, { accessToken: this.env.EXPO_ACCESS_TOKEN || undefined, fetchFn: this.pushFetch });
     } catch (e) {
-      console.error('[CoachAgent] getReceipts failed', e);
+      logEvent('push.receipt', { user: this.name, tickets: ids.length, outcome: 'fetch_failed', error: errorText(e), level: 'error' });
       return;
     }
     const now = Date.now();
     for (const id of ids) {
       const r = receipts[id];
+      logEvent('push.receipt', {
+        user: this.name,
+        ticketId: id,
+        outcome: r?.status ?? 'unknown',
+        error: r?.status === 'error' ? r.error : undefined,
+        level: r?.status === 'error' ? 'error' : undefined,
+      });
       if (!r) continue; // unknown to Expo (expired after 24 h); leave the entry as is
       if (r.status === 'ok') {
         this.store.updatePush(id, { receipt: 'ok', receiptAt: now });
@@ -656,6 +745,15 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
    * last-attempt time isn't advanced, so it stays due and fires on the next local day.
    */
   async proactiveTick(): Promise<void> {
+    await withSpan('coach.tick', { 'coach.user': this.name }, async (setAttrs) => {
+      const decision = await this.tick();
+      setAttrs({ 'coach.tick.decision': decision });
+      logEvent('tick', { user: this.name, decision });
+    });
+  }
+
+  /** Returns what the tick did, for the log: a trigger run, a capped skip, or nothing due. */
+  private async tick(): Promise<string> {
     const now = Date.now();
     const timings = getTimings(isDevMode(this.env));
     const tz = this.timezone();
@@ -664,8 +762,8 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
     const c = this.campaign();
     const lastUser = this.store.get<number>(KV.lastUserMessageAt) ?? 0;
     const lastActivityAt = Math.max(c.lastActivityAt, lastUser);
+    const skipped: string[] = [];
     if (
-      !capped('inactivity') &&
       inactivityDue({
         now,
         lastActivityAt,
@@ -673,12 +771,14 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
         thresholdMs: timings.inactivityThresholdMs,
       })
     ) {
-      this.store.set(KV.lastInactivityAt, now);
-      await this.runProactive({ trigger: 'inactivity' });
-      return;
+      if (!capped('inactivity')) {
+        this.store.set(KV.lastInactivityAt, now);
+        await this.runProactive({ trigger: 'inactivity' });
+        return 'inactivity';
+      }
+      skipped.push('inactivity_capped');
     }
     if (
-      !capped('checkin') &&
       checkinDue({
         now,
         timeZone: tz,
@@ -687,10 +787,16 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
         atLocalHour: timings.checkinAtLocalHour,
       })
     ) {
-      this.store.set(KV.lastCheckinAt, now);
-      await this.runProactive({ trigger: 'checkin' });
+      if (!capped('checkin')) {
+        this.store.set(KV.lastCheckinAt, now);
+        await this.runProactive({ trigger: 'checkin' });
+        return [...skipped, 'checkin'].join(',');
+      }
+      skipped.push('checkin_capped');
     }
+    return skipped.join(',') || 'nothing_due';
   }
+
 
   // ---- debug / admin actions ---------------------------------------------------------
   //
@@ -844,6 +950,22 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
   // ---- HTTP routing ----------------------------------------------------------------------
 
   async onRequest(request: Request): Promise<Response> {
+    const started = Date.now();
+    const method = request.method.toUpperCase();
+    const route = new URL(request.url).pathname.split('/').filter(Boolean).slice(2).join('/');
+    const res = await this.routeRequest(request);
+    logEvent('request', {
+      user: this.name,
+      method,
+      route,
+      status: res.status,
+      ms: Date.now() - started,
+      level: res.status >= 500 ? 'error' : undefined,
+    });
+    return res;
+  }
+
+  private async routeRequest(request: Request): Promise<Response> {
     const tz = request.headers.get('X-Timezone');
     if (isValidTimezone(tz) && tz !== this.storedTimezone()) this.store.set(KV.timezone, tz);
 
@@ -894,7 +1016,7 @@ export class CoachAgent extends AIChatAgent<Cloudflare.Env> {
       }
       return json({ error: 'not_found', route }, 404);
     } catch (e) {
-      console.error('[CoachAgent] request failed', route, e);
+      logEvent('request', { user: this.name, method, route, error: errorText(e), level: 'error' });
       return json({ error: 'internal', message: e instanceof Error ? e.message : String(e) }, 500);
     }
   }

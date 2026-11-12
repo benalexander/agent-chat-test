@@ -4,7 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
-  "observability": { "enabled": true },
+  // Logs (structured console.log events, see src/obs.ts) + traces (AI SDK spans via
+  // wrapAISDK and custom coach.* spans); both under Workers → Observability / Agents.
+  "observability": { "enabled": true, "traces": { "enabled": true } },
   "durable_objects": {
     "bindings": [
       { "name": "CoachAgent", "class_name": "CoachAgent" },
@@ -32,8 +34,8 @@
     // "anthropic" | "mock" (mock = canned AI SDK mock model, no API key needed).
     "LLM_MODE": "anthropic",
     // Cloudflare AI Gateway. Leave empty to call Anthropic directly.
-    "AI_GATEWAY_ACCOUNT_ID": "",
-    "AI_GATEWAY_ID": ""
+    "AI_GATEWAY_ACCOUNT_ID": "1d44a120701bc88e030fe966d799a60d",
+    "AI_GATEWAY_ID": "agent-chat-test"
   }
   // Secrets (wrangler secret put / .dev.vars):
   //   ANTHROPIC_API_KEY, APP_SHARED_SECRET, ADMIN_SECRET, CF_AIG_TOKEN (optional)
